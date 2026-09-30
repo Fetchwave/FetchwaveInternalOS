@@ -1,0 +1,551 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fetchwave Team OS</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<style>
+  :root{
+    --bg:#F5F5F7; --sidebar:#1D1D1F; --white:#fff;
+    --text:#1D1D1F; --muted:#6E6E73; --faint:#AEAEB2;
+    --accent:#F04A2B; --blue:#1C6FE0;
+    --border:#E4E4E7;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);font-family:'Manrope',sans-serif;color:var(--text);}
+  a{color:var(--blue);text-decoration:none;}
+  button{font-family:inherit;cursor:pointer;}
+  input,select,textarea{font-family:inherit;}
+  .pill{border-radius:999px;padding:3px 10px;font-size:11px;font-weight:700;display:inline-block;width:fit-content;}
+  .card{background:#fff;border-radius:18px;padding:15px;box-shadow:0 1px 2px rgba(0,0,0,0.04),0 10px 20px -16px rgba(0,0,0,0.14);}
+  .btn-dark{background:var(--sidebar);color:#fff;border:none;border-radius:999px;padding:10px 22px;font-weight:600;font-size:14px;}
+  .btn-ghost{background:#F0F6FE;color:var(--blue);border:none;border-radius:999px;padding:4px 12px;font-size:11px;font-weight:600;}
+  .avatar{border-radius:999px;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;flex-shrink:0;}
+  .navlink{display:block;font-size:14px;font-weight:500;color:#98989D;border-radius:999px;padding:9px 16px;cursor:pointer;}
+  .navlink.active{font-weight:600;color:#1D1D1F;background:#fff;}
+  .navlabel{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#6E6E73;padding:14px 16px 4px;}
+  #app{width:100%;min-height:100vh;}
+  .col{display:flex;flex-direction:column;gap:12px;flex:1;min-width:0;}
+  .col-header{display:flex;align-items:center;justify-content:space-between;padding:0 4px;}
+  .col-title{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;}
+  .count{font-size:12px;font-weight:700;color:var(--muted);background:#E8E8ED;padding:2px 10px;border-radius:999px;}
+  .board{display:flex;gap:16px;flex-grow:1;min-height:0;}
+  .board .col{background:transparent;}
+  .col-drop.over{outline:2px dashed var(--blue);outline-offset:4px;border-radius:12px;}
+  .task-card{cursor:grab;}
+  .modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0.35);display:flex;align-items:center;justify-content:center;z-index:50;}
+  .modal{background:#fff;border-radius:20px;padding:24px;width:420px;max-width:90vw;display:flex;flex-direction:column;gap:12px;}
+  .field{display:flex;flex-direction:column;gap:4px;}
+  .field label{font-size:12px;font-weight:600;color:var(--muted);}
+  .field input,.field select,.field textarea{border:1px solid var(--border);border-radius:10px;padding:9px 12px;font-size:14px;}
+  .modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:6px;}
+  .link-btn{background:none;border:none;color:var(--muted);font-size:13px;font-weight:600;padding:9px 16px;}
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<script>
+const SUPABASE_URL = 'https://fjufyciqeiovcixislpg.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_pAFxHuNsH-MZI0x0Dh4STA_IK6awyHI';
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+const app = document.getElementById('app');
+let state = { session: null, people: [], clients: [], tasks: [], leads: [], notes: [], events: [], route: 'dashboard', modal: null, notesFor: null };
+
+const NAV_CLIENTS = () => state.clients.filter(c => !c.is_internal || true); // show all, ordered as fetched
+
+function esc(s){ return (s ?? '').toString().replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+function fmtDue(dateStr, status){
+  if(!dateStr) return { label:'—', bg:'#EDEDF0', color:'#AEAEB2' };
+  const today = new Date(); today.setHours(0,0,0,0);
+  const d = new Date(dateStr + 'T00:00:00');
+  const diff = Math.round((d - today) / 86400000);
+  if(status === 'complete') return { label:'Done', bg:'#DCEEE0', color:'#2F6B3E' };
+  if(diff < 0) return { label:'Overdue', bg:'#FBE1D9', color:'#B23A1F' };
+  if(diff === 0) return { label:'Today', bg:'#FFF1D6', color:'#8A6414' };
+  if(diff === 1) return { label:'Tomorrow', bg:'#E4EFFC', color:'#1C6FE0' };
+  return { label:d.toLocaleDateString('en-ZA',{weekday:'short',day:'numeric',month:'short'}), bg:'#E4EFFC', color:'#1C6FE0' };
+}
+function personById(id){ return state.people.find(p => p.id === id); }
+function clientById(id){ return state.clients.find(c => c.id === id); }
+
+// ---------- Data ----------
+async function loadAll(){
+  const [people, clients, tasks, leads, events] = await Promise.all([
+    sb.from('people').select('*').order('name'),
+    sb.from('clients').select('*').order('created_at'),
+    sb.from('tasks').select('*').eq('archived', false).order('due_date', { nullsFirst:false }),
+    sb.from('hit_list_leads').select('*').order('created_at', { ascending:false }),
+    sb.from('calendar_events').select('*').order('event_date'),
+  ]);
+  state.people = people.data || [];
+  state.clients = clients.data || [];
+  state.tasks = tasks.data || [];
+  state.leads = leads.data || [];
+  state.events = events.data || [];
+  render();
+}
+async function loadNotes(leadId){
+  const { data } = await sb.from('hit_list_notes').select('*').eq('lead_id', leadId).order('created_at', { ascending:false });
+  state.notes = data || [];
+  render();
+}
+
+// ---------- Auth ----------
+async function checkSession(){
+  const { data } = await sb.auth.getSession();
+  state.session = data.session;
+  if(state.session){ await loadAll(); } else { render(); }
+}
+sb.auth.onAuthStateChange((_event, session) => {
+  state.session = session;
+  if(session) loadAll(); else render();
+});
+
+async function handleLogin(e){
+  e.preventDefault();
+  const email = document.getElementById('login-email').value.trim();
+  const password = document.getElementById('login-password').value;
+  const errEl = document.getElementById('login-error');
+  errEl.textContent = '';
+  const { error } = await sb.auth.signInWithPassword({ email, password });
+  if(error) errEl.textContent = error.message;
+}
+async function handleLogout(){ await sb.auth.signOut(); }
+
+// ---------- Mutations ----------
+async function setTaskStatus(id, status){
+  const patch = { status, updated_at: new Date().toISOString() };
+  if(status === 'complete') patch.completed_at = new Date().toISOString();
+  await sb.from('tasks').update(patch).eq('id', id);
+  await loadAll();
+}
+async function createTask(fields){
+  await sb.from('tasks').insert(fields);
+  await loadAll();
+}
+async function setLeadStage(id, stage){
+  await sb.from('hit_list_leads').update({ stage, last_contact_at: new Date().toISOString() }).eq('id', id);
+  await loadAll();
+}
+async function createLead(fields){
+  await sb.from('hit_list_leads').insert(fields);
+  await loadAll();
+}
+async function addNote(leadId, note){
+  await sb.from('hit_list_notes').insert({ lead_id: leadId, note, author_id: state.myPersonId || null });
+  await sb.from('hit_list_leads').update({ last_contact_at: new Date().toISOString() }).eq('id', leadId);
+  await loadNotes(leadId);
+  await loadAll();
+}
+async function createEvent(fields){
+  await sb.from('calendar_events').insert(fields);
+  await loadAll();
+}
+
+// ---------- Rendering ----------
+function render(){
+  if(!state.session){ renderLogin(); return; }
+  const view = routeView();
+  app.innerHTML = `
+    <div style="display:flex;min-height:100vh;">
+      ${renderSidebar()}
+      <div style="flex-grow:1;padding:30px 32px;min-width:0;display:flex;flex-direction:column;">
+        ${view}
+      </div>
+    </div>
+    ${state.modal ? renderModal() : ''}
+  `;
+  wireEvents();
+}
+
+function renderLogin(){
+  app.innerHTML = `
+    <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg);">
+      <form id="login-form" style="background:#fff;border-radius:20px;padding:36px;width:340px;box-shadow:0 1px 2px rgba(0,0,0,0.04),0 12px 24px -16px rgba(0,0,0,0.14);display:flex;flex-direction:column;gap:14px;">
+        <div style="font-size:20px;font-weight:800;letter-spacing:-0.02em;">Fetchwave <span style="color:var(--accent);">Team OS</span></div>
+        <div class="field"><label>Email</label><input id="login-email" type="email" required></div>
+        <div class="field"><label>Password</label><input id="login-password" type="password" required></div>
+        <div id="login-error" style="color:#B23A1F;font-size:13px;"></div>
+        <button type="submit" class="btn-dark" style="width:100%;">Log in</button>
+      </form>
+    </div>`;
+  document.getElementById('login-form').addEventListener('submit', handleLogin);
+}
+
+function renderSidebar(){
+  const item = (route, label) => `<div class="navlink ${state.route===route?'active':''}" data-route="${route}">${esc(label)}</div>`;
+  const clientItems = state.clients.map(c => item('client:'+c.id, c.name)).join('');
+  return `
+    <div style="width:226px;flex-shrink:0;background:var(--sidebar);min-height:100vh;display:flex;flex-direction:column;padding:28px 16px;">
+      <div style="display:flex;align-items:center;gap:9px;padding:0 8px;">
+        <div style="width:22px;height:22px;border-radius:6px;background:var(--accent);"></div>
+        <span style="font-size:18px;font-weight:800;color:#fff;letter-spacing:-0.02em;">Fetchwave</span>
+      </div>
+      <div style="font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:0.09em;color:var(--accent);margin:4px 0 26px 8px;">Team OS</div>
+      <nav style="display:flex;flex-direction:column;gap:2px;">
+        ${item('dashboard','Dashboard')}
+        ${item('all-tasks','All Tasks')}
+        ${item('hit-list','Hit List')}
+        <div class="navlabel">Clients</div>
+        ${clientItems}
+        <div style="height:1px;background:rgba(255,255,255,0.08);margin:10px 8px;"></div>
+        ${item('projects','Projects')}
+        ${item('calendar','Calendar')}
+        ${item('team','Team')}
+      </nav>
+      <div style="margin-top:auto;padding-top:16px;border-top:1px solid rgba(255,255,255,0.1);">
+        <button id="logout-btn" class="link-btn" style="color:#98989D;padding:0;">Log out</button>
+      </div>
+    </div>`;
+}
+
+function routeView(){
+  const r = state.route;
+  if(r === 'dashboard') return viewDashboard();
+  if(r === 'all-tasks') return viewBoard(state.tasks, 'All Tasks', "Every client, one board", null);
+  if(r === 'hit-list') return viewHitList();
+  if(r === 'projects') return viewBoard(state.tasks.filter(t=>!t.client_id), 'Projects', "Internal work not tied to a client", null);
+  if(r === 'calendar') return viewCalendar();
+  if(r === 'team') return viewTeam();
+  if(r.startsWith('client:')){
+    const id = r.split(':')[1]; const c = clientById(id);
+    return viewBoard(state.tasks.filter(t=>t.client_id===id), c ? c.name : 'Client', 'Client workspace', id);
+  }
+  if(r.startsWith('member:')){
+    const id = r.split(':')[1]; const p = personById(id);
+    return viewBoard(state.tasks.filter(t=>t.assignee_id===id), p ? p.name : 'Member', p ? p.role : '', null, id);
+  }
+  return viewDashboard();
+}
+
+function taskCard(t){
+  const c = clientById(t.client_id);
+  const a = personById(t.assignee_id);
+  const due = fmtDue(t.due_date, t.status);
+  return `
+    <div class="card task-card" draggable="true" data-task-id="${t.id}">
+      ${c ? `<span class="pill" style="background:${c.tag_bg};color:${c.tag_color};margin-bottom:8px;">${esc(c.name)}</span>` : ''}
+      <div style="font-weight:700;font-size:13.5px;line-height:1.3;margin-bottom:8px;${t.status==='complete'?'text-decoration:line-through;color:var(--muted);':''}">${esc(t.title)}</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        ${a ? `<div class="avatar" style="width:24px;height:24px;font-size:10px;background:${a.avatar_color};">${esc(a.initials)}</div>` : '<span></span>'}
+        <span class="pill" style="background:${due.bg};color:${due.color};">${due.label}</span>
+      </div>
+    </div>`;
+}
+
+function viewBoard(tasks, title, subtitle, presetClientId, presetAssigneeId){
+  const cols = [['open','Open'],['in_progress','In Progress'],['complete','Complete']];
+  const back = presetAssigneeId ? `<div class="link-btn" data-route="team" style="padding:0;margin-bottom:6px;cursor:pointer;">← Team</div>` : '';
+  return `
+    ${back}
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+      <div><h1 style="margin:0;font-size:26px;font-weight:800;letter-spacing:-0.02em;">${esc(title)}</h1>
+      <p style="margin:2px 0 0;font-size:13px;color:var(--muted);">${esc(subtitle||'')}</p></div>
+      <button class="btn-dark" data-open-task-modal="1" data-preset-client="${presetClientId||''}" data-preset-assignee="${presetAssigneeId||''}">+ New Task</button>
+    </div>
+    <div class="board">
+      ${cols.map(([status,label]) => {
+        const list = tasks.filter(t=>t.status===status);
+        return `<div class="col col-drop" data-status="${status}">
+          <div class="col-header"><span class="col-title">${label}</span><span class="count">${list.length}</span></div>
+          <div style="display:flex;flex-direction:column;gap:12px;overflow-y:auto;">${list.map(taskCard).join('') || '<div style="color:var(--faint);font-size:13px;padding:8px 4px;">No tasks</div>'}</div>
+        </div>`;
+      }).join('')}
+    </div>`;
+}
+
+function leadCard(l){
+  const owner = personById(l.owner_id);
+  const age = l.last_contact_at ? new Date(l.last_contact_at).toLocaleDateString('en-ZA',{day:'numeric',month:'short'}) : '';
+  return `
+    <div class="card task-card" draggable="true" data-lead-id="${l.id}">
+      <div style="font-weight:700;font-size:13.5px;margin-bottom:6px;">${esc(l.business_name)}</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px;">${esc(l.phone||'')}</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        ${owner ? `<div class="avatar" style="width:22px;height:22px;font-size:9.5px;background:${owner.avatar_color};">${esc(owner.initials)}</div>` : '<span></span>'}
+        <button class="link-btn" style="padding:0;" data-view-notes="${l.id}">Notes →</button>
+      </div>
+      <div style="font-size:10.5px;color:var(--faint);margin-top:4px;">${age}</div>
+    </div>`;
+}
+
+function viewHitList(){
+  const stages = [['to_call','To Call'],['contacted','Contacted'],['interested','Interested'],['not_interested','Not Interested']];
+  return `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+      <div><h1 style="margin:0;font-size:26px;font-weight:800;letter-spacing:-0.02em;">Hit List</h1>
+      <p style="margin:2px 0 0;font-size:13px;color:var(--muted);">Manually scraped leads we're cold-calling</p></div>
+      <button class="btn-dark" id="add-lead-btn">+ Add Lead</button>
+    </div>
+    <div class="board">
+      ${stages.map(([stage,label]) => {
+        const list = state.leads.filter(l=>l.stage===stage);
+        return `<div class="col col-drop" data-lead-stage="${stage}">
+          <div class="col-header"><span class="col-title">${label}</span><span class="count">${list.length}</span></div>
+          <div style="display:flex;flex-direction:column;gap:12px;overflow-y:auto;">${list.map(leadCard).join('') || '<div style="color:var(--faint);font-size:13px;padding:8px 4px;">None</div>'}</div>
+        </div>`;
+      }).join('')}
+    </div>`;
+}
+
+function viewDashboard(){
+  const open = state.tasks.filter(t=>t.status!=='complete');
+  const overdue = open.filter(t=>t.due_date && t.due_date < new Date().toISOString().slice(0,10));
+  const today = new Date().toISOString().slice(0,10);
+  const dueToday = open.filter(t=>t.due_date===today);
+  const weekAgo = new Date(Date.now()-7*86400000).toISOString();
+  const doneThisWeek = state.tasks.filter(t=>t.status==='complete' && t.completed_at && t.completed_at >= weekAgo);
+  const upcoming = [...open].filter(t=>t.due_date).sort((a,b)=>a.due_date.localeCompare(b.due_date)).slice(0,8);
+  const workload = state.people.map(p => {
+    const mine = open.filter(t=>t.assignee_id===p.id);
+    const mineOverdue = mine.filter(t=>t.due_date && t.due_date < today);
+    return { p, count: mine.length, overdue: mineOverdue.length };
+  });
+  return `
+    <h1 style="margin:0 0 2px;font-size:28px;font-weight:800;letter-spacing:-0.02em;">Dashboard</h1>
+    <p style="margin:0 0 20px;font-size:13px;color:var(--muted);">Team overview</p>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px;">
+      ${statTile('Open Tasks', open.length, 'across every client', 'var(--text)')}
+      ${statTile('Due Today', dueToday.length, dueToday.map(t=>clientById(t.client_id)?.name).filter(Boolean).join(', ')||'—', '#8A6414')}
+      ${statTile('Overdue', overdue.length, overdue[0]?esc(overdue[0].title):'nothing overdue', '#B23A1F')}
+      ${statTile('Done This Week', doneThisWeek.length, 'nice work, team', '#2F6B3E')}
+    </div>
+    <h2 style="font-size:15px;font-weight:800;margin:0 0 10px;">Workload</h2>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:24px;">
+      ${workload.map(w => `
+        <div class="card" style="display:flex;align-items:center;gap:12px;cursor:pointer;" data-route="member:${w.p.id}">
+          <div class="avatar" style="width:38px;height:38px;font-size:13px;background:${w.p.avatar_color};">${esc(w.p.initials)}</div>
+          <div><div style="font-weight:700;font-size:14px;">${esc(w.p.name)}</div>
+          <div style="font-size:12px;color:var(--muted);">${w.count} open${w.overdue?` · ${w.overdue} overdue`:''}</div></div>
+        </div>`).join('')}
+    </div>
+    <h2 style="font-size:15px;font-weight:800;margin:0 0 10px;">Upcoming deadlines</h2>
+    <div class="card" style="padding:0;overflow:hidden;">
+      ${upcoming.map(t => {
+        const c = clientById(t.client_id); const a = personById(t.assignee_id); const due = fmtDue(t.due_date, t.status);
+        return `<div style="display:grid;grid-template-columns:120px 1fr 44px 96px;align-items:center;padding:12px 22px;border-top:1px solid #F5F5F7;">
+          ${c ? `<span class="pill" style="background:${c.tag_bg};color:${c.tag_color};">${esc(c.name)}</span>` : '<span></span>'}
+          <span style="font-weight:600;font-size:14px;">${esc(t.title)}</span>
+          ${a ? `<div class="avatar" style="width:26px;height:26px;font-size:10px;background:${a.avatar_color};justify-self:center;">${esc(a.initials)}</div>` : '<span></span>'}
+          <span class="pill" style="background:${due.bg};color:${due.color};justify-self:end;">${due.label}</span>
+        </div>`;
+      }).join('') || '<div style="padding:16px 22px;color:var(--faint);">Nothing due yet</div>'}
+    </div>`;
+}
+function statTile(label, value, sub, color){
+  return `<div class="card" style="display:flex;flex-direction:column;gap:4px;">
+    <span style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:var(--faint);">${label}</span>
+    <span style="font-size:32px;font-weight:800;letter-spacing:-0.02em;color:${color};">${value}</span>
+    <span style="font-size:12px;color:var(--muted);">${esc(sub)}</span>
+  </div>`;
+}
+
+function viewTeam(){
+  return `
+    <h1 style="margin:0 0 2px;font-size:28px;font-weight:800;letter-spacing:-0.02em;">Team</h1>
+    <p style="margin:0 0 20px;font-size:13px;color:var(--muted);">Who's carrying what, right now</p>
+    <div style="display:flex;flex-direction:column;gap:14px;">
+      ${state.people.map(p => {
+        const mine = state.tasks.filter(t=>t.assignee_id===p.id && t.status!=='complete');
+        const overdue = mine.filter(t=>t.due_date && t.due_date < new Date().toISOString().slice(0,10)).length;
+        const five = mine.slice(0,5);
+        return `<div class="card" style="display:flex;align-items:center;gap:20px;">
+          <div style="display:flex;align-items:center;gap:12px;width:210px;flex-shrink:0;">
+            <div class="avatar" style="width:44px;height:44px;font-size:15px;background:${p.avatar_color};">${esc(p.initials)}</div>
+            <div><div style="font-weight:800;font-size:15px;">${esc(p.name)}</div><div style="font-size:11.5px;color:var(--muted);">${esc(p.role||'')}</div></div>
+          </div>
+          <div style="display:flex;gap:8px;flex-shrink:0;">
+            <div style="background:var(--bg);border-radius:12px;padding:8px 14px;text-align:center;"><div style="font-size:17px;font-weight:800;">${mine.length}</div><div style="font-size:9.5px;color:var(--faint);">open</div></div>
+            <div style="background:var(--bg);border-radius:12px;padding:8px 14px;text-align:center;"><div style="font-size:17px;font-weight:800;color:${overdue?'#B23A1F':'inherit'};">${overdue}</div><div style="font-size:9.5px;color:var(--faint);">overdue</div></div>
+          </div>
+          <div style="height:38px;width:1px;background:#EEEEF0;flex-shrink:0;"></div>
+          <div style="display:flex;gap:10px;flex-grow:1;overflow:hidden;">
+            ${five.map(t => { const due = fmtDue(t.due_date,t.status); return `<div style="background:var(--bg);border-radius:12px;padding:9px 12px;width:150px;flex-shrink:0;">
+              <div style="font-size:11.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(t.title)}</div>
+              <span class="pill" style="background:${due.bg};color:${due.color};margin-top:6px;font-size:9.5px;">${due.label}</span></div>`; }).join('') || '<span style="color:var(--faint);font-size:13px;">Nothing assigned</span>'}
+          </div>
+          <button class="btn-dark" style="flex-shrink:0;" data-route="member:${p.id}">View all →</button>
+        </div>`;
+      }).join('')}
+    </div>`;
+}
+
+function viewCalendar(){
+  const now = new Date();
+  const year = now.getFullYear(), month = now.getMonth();
+  const first = new Date(year, month, 1);
+  const startWeekday = first.getDay();
+  const daysInMonth = new Date(year, month+1, 0).getDate();
+  const cells = [];
+  for(let i=0;i<startWeekday;i++) cells.push(null);
+  for(let d=1; d<=daysInMonth; d++) cells.push(d);
+  while(cells.length % 7 !== 0) cells.push(null);
+  const dateKey = d => `${year}-${String(month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+  const todayKey = now.toISOString().slice(0,10);
+  return `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <div><h1 style="margin:0;font-size:28px;font-weight:800;letter-spacing:-0.02em;">Calendar</h1>
+      <p style="margin:2px 0 0;font-size:13px;color:var(--muted);">${first.toLocaleDateString('en-ZA',{month:'long',year:'numeric'})}</p></div>
+      <button class="btn-dark" id="add-event-btn">+ New Event</button>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:1px;background:#E8E8ED;border-radius:12px 12px 0 0;overflow:hidden;">
+      ${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(w=>`<div style="background:#FAFAFB;padding:8px;text-align:center;font-size:11px;font-weight:700;color:var(--faint);">${w}</div>`).join('')}
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:1px;background:#E8E8ED;border-radius:0 0 12px 12px;overflow:hidden;flex-grow:1;">
+      ${cells.map(d => {
+        if(!d) return `<div style="background:#fff;min-height:90px;"></div>`;
+        const key = dateKey(d);
+        const dayTasks = state.tasks.filter(t=>t.due_date===key);
+        const dayEvents = state.events.filter(e=>e.event_date===key);
+        const isToday = key === todayKey;
+        return `<div style="background:#fff;min-height:90px;padding:8px;display:flex;flex-direction:column;gap:4px;">
+          <span style="width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;border-radius:999px;${isToday?`background:var(--accent);color:#fff;`:''}">${d}</span>
+          ${dayTasks.slice(0,2).map(t=>`<span class="pill" style="background:#E4EFFC;color:#1C6FE0;font-size:9.5px;">${esc(t.title.slice(0,18))}</span>`).join('')}
+          ${dayEvents.map(e=>`<span class="pill" style="background:#FBE1D9;color:#B23A1F;font-size:9.5px;">${esc(e.title.slice(0,18))}</span>`).join('')}
+        </div>`;
+      }).join('')}
+    </div>`;
+}
+
+function renderModal(){
+  if(state.modal === 'new-task'){
+    const clientOpts = state.clients.map(c=>`<option value="${c.id}" ${c.id===state.presetClient?'selected':''}>${esc(c.name)}</option>`).join('');
+    const peopleOpts = state.people.map(p=>`<option value="${p.id}" ${p.id===state.presetAssignee?'selected':''}>${esc(p.name)}</option>`).join('');
+    return `<div class="modal-backdrop" id="modal-backdrop"><div class="modal">
+      <div style="font-weight:800;font-size:17px;">New Task</div>
+      <div class="field"><label>Title</label><input id="f-title" type="text"></div>
+      <div class="field"><label>Client (leave blank for Projects)</label><select id="f-client"><option value="">— None —</option>${clientOpts}</select></div>
+      <div class="field"><label>Assignee</label><select id="f-assignee"><option value="">— Unassigned —</option>${peopleOpts}</select></div>
+      <div class="field"><label>Due date</label><input id="f-due" type="date"></div>
+      <div class="field"><label>Priority</label><select id="f-priority"><option value="medium" selected>Medium</option><option value="high">High</option><option value="low">Low</option></select></div>
+      <div class="modal-actions"><button class="link-btn" id="modal-cancel">Cancel</button><button class="btn-dark" id="save-task">Create</button></div>
+    </div></div>`;
+  }
+  if(state.modal === 'new-lead'){
+    const peopleOpts = state.people.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('');
+    return `<div class="modal-backdrop" id="modal-backdrop"><div class="modal">
+      <div style="font-weight:800;font-size:17px;">Add Lead</div>
+      <div class="field"><label>Business name</label><input id="f-name" type="text"></div>
+      <div class="field"><label>Phone</label><input id="f-phone" type="text"></div>
+      <div class="field"><label>Owner</label><select id="f-owner"><option value="">— Unassigned —</option>${peopleOpts}</select></div>
+      <div class="modal-actions"><button class="link-btn" id="modal-cancel">Cancel</button><button class="btn-dark" id="save-lead">Add</button></div>
+    </div></div>`;
+  }
+  if(state.modal === 'new-event'){
+    return `<div class="modal-backdrop" id="modal-backdrop"><div class="modal">
+      <div style="font-weight:800;font-size:17px;">New Event</div>
+      <div class="field"><label>Title</label><input id="f-etitle" type="text"></div>
+      <div class="field"><label>Date</label><input id="f-edate" type="date"></div>
+      <div class="modal-actions"><button class="link-btn" id="modal-cancel">Cancel</button><button class="btn-dark" id="save-event">Add</button></div>
+    </div></div>`;
+  }
+  if(state.modal === 'notes'){
+    const lead = state.leads.find(l=>l.id===state.notesFor);
+    return `<div class="modal-backdrop" id="modal-backdrop"><div class="modal">
+      <div style="font-weight:800;font-size:17px;">${esc(lead?.business_name||'')} — Notes</div>
+      <div style="display:flex;flex-direction:column;gap:8px;max-height:220px;overflow-y:auto;">
+        ${state.notes.map(n=>`<div style="background:var(--bg);border-radius:10px;padding:8px 12px;font-size:13px;">${esc(n.note)}<div style="font-size:10.5px;color:var(--faint);margin-top:4px;">${new Date(n.created_at).toLocaleString('en-ZA')}</div></div>`).join('') || '<div style="color:var(--faint);font-size:13px;">No notes yet</div>'}
+      </div>
+      <div class="field"><label>Add a note</label><textarea id="f-note" rows="3"></textarea></div>
+      <div class="modal-actions"><button class="link-btn" id="modal-cancel">Close</button><button class="btn-dark" id="save-note">Add note</button></div>
+    </div></div>`;
+  }
+  return '';
+}
+
+// ---------- Events ----------
+function wireEvents(){
+  app.querySelectorAll('[data-route]').forEach(el => el.addEventListener('click', () => { state.route = el.dataset.route; render(); }));
+  const logout = document.getElementById('logout-btn'); if(logout) logout.addEventListener('click', handleLogout);
+
+  app.querySelectorAll('[data-open-task-modal]').forEach(el => el.addEventListener('click', () => {
+    state.presetClient = el.dataset.presetClient || null;
+    state.presetAssignee = el.dataset.presetAssignee || null;
+    state.modal = 'new-task'; render();
+  }));
+  const addLeadBtn = document.getElementById('add-lead-btn'); if(addLeadBtn) addLeadBtn.addEventListener('click', ()=>{ state.modal='new-lead'; render(); });
+  const addEventBtn = document.getElementById('add-event-btn'); if(addEventBtn) addEventBtn.addEventListener('click', ()=>{ state.modal='new-event'; render(); });
+
+  const backdrop = document.getElementById('modal-backdrop');
+  if(backdrop){
+    backdrop.addEventListener('click', e => { if(e.target === backdrop){ state.modal=null; render(); } });
+    const cancel = document.getElementById('modal-cancel'); if(cancel) cancel.addEventListener('click', ()=>{ state.modal=null; render(); });
+    const saveTask = document.getElementById('save-task');
+    if(saveTask) saveTask.addEventListener('click', async () => {
+      const title = document.getElementById('f-title').value.trim();
+      if(!title) return;
+      await createTask({
+        title,
+        client_id: document.getElementById('f-client').value || null,
+        assignee_id: document.getElementById('f-assignee').value || null,
+        due_date: document.getElementById('f-due').value || null,
+        priority: document.getElementById('f-priority').value,
+        status: 'open',
+      });
+      state.modal = null; render();
+    });
+    const saveLead = document.getElementById('save-lead');
+    if(saveLead) saveLead.addEventListener('click', async () => {
+      const business_name = document.getElementById('f-name').value.trim();
+      if(!business_name) return;
+      await createLead({ business_name, phone: document.getElementById('f-phone').value, owner_id: document.getElementById('f-owner').value || null, stage:'to_call' });
+      state.modal = null; render();
+    });
+    const saveEvent = document.getElementById('save-event');
+    if(saveEvent) saveEvent.addEventListener('click', async () => {
+      const title = document.getElementById('f-etitle').value.trim();
+      const event_date = document.getElementById('f-edate').value;
+      if(!title || !event_date) return;
+      await createEvent({ title, event_date });
+      state.modal = null; render();
+    });
+    const saveNote = document.getElementById('save-note');
+    if(saveNote) saveNote.addEventListener('click', async () => {
+      const note = document.getElementById('f-note').value.trim();
+      if(!note) return;
+      await addNote(state.notesFor, note);
+      document.getElementById('f-note').value = '';
+    });
+  }
+
+  app.querySelectorAll('[data-view-notes]').forEach(el => el.addEventListener('click', async () => {
+    state.notesFor = el.dataset.viewNotes; state.modal = 'notes';
+    await loadNotes(state.notesFor);
+  }));
+
+  // Drag and drop: tasks
+  app.querySelectorAll('.task-card[data-task-id]').forEach(el => {
+    el.addEventListener('dragstart', e => e.dataTransfer.setData('text/task-id', el.dataset.taskId));
+  });
+  app.querySelectorAll('.col-drop[data-status]').forEach(col => {
+    col.addEventListener('dragover', e => { e.preventDefault(); col.classList.add('over'); });
+    col.addEventListener('dragleave', () => col.classList.remove('over'));
+    col.addEventListener('drop', async e => {
+      e.preventDefault(); col.classList.remove('over');
+      const id = e.dataTransfer.getData('text/task-id');
+      if(id) await setTaskStatus(id, col.dataset.status);
+    });
+  });
+  // Drag and drop: leads
+  app.querySelectorAll('.task-card[data-lead-id]').forEach(el => {
+    el.addEventListener('dragstart', e => e.dataTransfer.setData('text/lead-id', el.dataset.leadId));
+  });
+  app.querySelectorAll('.col-drop[data-lead-stage]').forEach(col => {
+    col.addEventListener('dragover', e => { e.preventDefault(); col.classList.add('over'); });
+    col.addEventListener('dragleave', () => col.classList.remove('over'));
+    col.addEventListener('drop', async e => {
+      e.preventDefault(); col.classList.remove('over');
+      const id = e.dataTransfer.getData('text/lead-id');
+      if(id) await setLeadStage(id, col.dataset.leadStage);
+    });
+  });
+}
+
+checkSession();
+</script>
+</body>
+</html>
