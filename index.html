@@ -283,7 +283,7 @@ const TASK_COLS = [['open','Open'],['in_progress','In progress'],['complete','Co
 const S = {
   session:null, me:null, loaded:false, booting:true,
   people:[], clients:[], tasks:[], assignees:[], leads:[], events:[],
-  retainers:[], revenueItems:[], expenses:[],
+  retainers:[], revenueItems:[], expenses:[], leadValues:{},
   route: decodeURIComponent(location.hash.slice(1)) || 'dashboard',
   modal:null, showOlder:{},
   cal:(()=>{const n=new Date();return {y:n.getFullYear(),m:n.getMonth()};})(),
@@ -405,9 +405,11 @@ async function loadAll(){
       sb.from('client_retainers').select('*').order('created_at'),
       sb.from('revenue_items').select('*').order('created_at'),
       sb.from('expenses').select('*').order('created_at'),
+      sb.from('lead_values').select('*'),
     ]);
-    [S.retainers, S.revenueItems, S.expenses] = fin.map(r => r.data || []);
-  }
+    [S.retainers, S.revenueItems, S.expenses] = fin.slice(0,3).map(r => r.data || []);
+    S.leadValues = Object.fromEntries((fin[3].data || []).map(v => [v.lead_id, Number(v.monthly_value)]));
+  } else { S.retainers = []; S.revenueItems = []; S.expenses = []; S.leadValues = {}; }
   S.loaded = true;
   renderView();
 }
@@ -433,6 +435,7 @@ function fin(k){
   return { rets, one, exps, mrr, projects, expenses, revenue, profit, margin: revenue ? Math.round(profit / revenue * 100) : 0 };
 }
 const qualifiedLeads = () => S.leads.filter(l => l.stage === 'qualified');
+const lv = id => S.leadValues[id] || 0;
 
 /* ================= Render ================= */
 function go(route){
@@ -524,27 +527,15 @@ function pageDashboard(){
   const doneWeek = S.tasks.filter(x => x.status === 'complete' && x.completed_at && x.completed_at >= weekAgo);
   const hr = new Date().getHours();
   const greet = hr < 12 ? 'Good morning' : hr < 17 ? 'Good afternoon' : 'Good evening';
-  const q = qualifiedLeads(); const pipe = sum(q, l => l.monthly_value);
-
-  let moneyTiles;
-  if(isAdmin()){
-    const f = fin(thisMonth());
-    moneyTiles = [
-      tile('Revenue this month', money(f.revenue), `${money(f.mrr)} retainers + ${money(f.projects)} projects`, 'finance'),
-      tile('Profit this month', money(f.profit), `After ${money(f.expenses)} expenses`, 'finance', f.profit < 0 ? 'var(--red)' : 'var(--green)'),
-      tile('Qualified pipeline', money(pipe), `Monthly, from ${plural(q.length,'qualified lead')}`, 'hit-list', 'var(--blue)'),
-      tile('Potential MRR', money(f.mrr + pipe), 'Retainers if every qualified lead signs', 'hit-list'),
-    ].join('');
-  } else {
-    const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0,0,0,0);
-    const wonMonth = S.leads.filter(l => l.stage === 'won' && new Date(l.stage_changed_at) >= monthStart).length;
-    moneyTiles = [
-      tile('Qualified pipeline', money(pipe), 'Monthly value of qualified leads', 'hit-list', 'var(--blue)'),
-      tile('Qualified leads', q.length, 'Ready for a proposal', 'hit-list'),
-      tile('To call', S.leads.filter(l => l.stage === 'to_call').length, 'On the hit list', 'hit-list'),
-      tile('Won this month', wonMonth, 'Closed from the hit list', 'hit-list', 'var(--green)'),
-    ].join('');
-  }
+  const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0,0,0,0);
+  const byStage = st => S.leads.filter(l => l.stage === st).length;
+  const wonMonth = S.leads.filter(l => l.stage === 'won' && new Date(l.stage_changed_at) >= monthStart).length;
+  const leadTiles = [
+    tile('To call', byStage('to_call'), 'Waiting on the hit list', 'hit-list'),
+    tile('Contacted', byStage('contacted'), 'Spoken to, not qualified yet', 'hit-list'),
+    tile('Qualified', byStage('qualified'), 'Ready for a proposal', 'hit-list', 'var(--blue)'),
+    tile('Won this month', wonMonth, wonMonth ? 'New clients this month' : 'First win is out there', 'hit-list', 'var(--green)'),
+  ].join('');
 
   const upcoming = sortByDue(open.filter(x => x.due_date)).slice(0,8);
   const workload = S.people.map(p => {
@@ -561,7 +552,7 @@ function pageDashboard(){
     ${tile('Overdue', overdue.length, overdue.length ? overdue[0].title : 'Nothing overdue', 'all-tasks', overdue.length ? 'var(--red)' : '')}
     ${tile('Done this week', doneWeek.length, doneWeek.length ? 'Nice work, team' : 'Get the first one in', 'all-tasks', 'var(--green)')}
   </div>
-  <div class="tiles">${moneyTiles}</div>
+  <div class="tiles">${leadTiles}</div>
   <section><h2 class="h2">Workload</h2><div class="people-grid">
     ${workload.map(w => `<button class="person-card" data-action="go" data-route="member:${w.p.id}">${av(w.p,38)}<div style="min-width:0"><div style="font-weight:700;font-size:14px">${esc(w.p.name)}</div><div class="mini">${w.n} open${w.late?`, <span style="color:var(--red)">${w.late} overdue</span>`:''}</div></div></button>`).join('')}
   </div></section>
@@ -619,19 +610,20 @@ function leadCard(l){
   return `<div class="tcard ${l.stage==='lost'?'faded':''}" draggable="true" data-drag="lead:${l.id}" data-action="open-lead" data-id="${l.id}" tabindex="0">
     <div class="tcard-title">${esc(l.business_name)}</div>
     ${who ? `<div class="mini truncate">${esc(who)}</div>` : ''}
-    ${l.monthly_value ? `<div><span class="pill g">${money(l.monthly_value)} p/m</span></div>` : ''}
+    ${isAdmin() && lv(l.id) ? `<div><span class="pill g">${money(lv(l.id))} p/m</span></div>` : ''}
+    ${l.stage === 'won' && l.client_id && client(l.client_id) ? `<div><span class="pill g">${ICON.check} Client</span></div>` : ''}
     <div class="tcard-foot">${o ? av(o) : '<span class="mini faint">No owner</span>'}<span class="mini faint">${ago(l.stage_changed_at || l.created_at)}</span></div>
   </div>`;
 }
 function pageHitList(){
   const q = qualifiedLeads();
   return `
-  <div class="page-head"><div><h1 class="h1">Hit list</h1><p class="sub">Cold-call pipeline. ${plural(q.length,'qualified lead')} worth ${money(sum(q,l=>l.monthly_value))} per month.</p></div>
+  <div class="page-head"><div><h1 class="h1">Hit list</h1><p class="sub">Cold-call pipeline. ${plural(q.length,'qualified lead')}${isAdmin() ? ` worth ${money(sum(q,l=>lv(l.id)))} per month` : ''}. Drag a lead to Won and it becomes a client.</p></div>
     <div class="head-actions"><button class="btn" data-action="new-lead">+ Add lead</button></div></div>
   <div class="board" style="--cols:5">
     ${STAGES.map(([st,label]) => {
       const list = S.leads.filter(l => l.stage === st);
-      const val = sum(list, l => l.monthly_value);
+      const val = isAdmin() ? sum(list, l => lv(l.id)) : 0;
       return `<div class="col" data-drop="lead:${st}">
         <div class="col-head"><span class="col-title">${label}</span><span class="col-meta">${(st==='qualified'||st==='won') && val ? `<span class="mini">${money(val)}</span>` : ''}<span class="count">${list.length}</span></span></div>
         ${list.map(leadCard).join('') || '<div class="empty-drop">Drop leads here</div>'}
@@ -752,8 +744,8 @@ function pageFinance(){
           <div class="grid2"><input class="inp" id="exp-desc" placeholder="Description (optional)"><select class="inp" id="exp-rec"><option value="1">Every month</option><option value="0">This month only</option></select></div></div>
       </div>
       <div class="fin-card">
-        <div class="fin-head"><h3>Qualified pipeline</h3><span class="amt">${money(sum(qualifiedLeads(), l => l.monthly_value))}</span></div>
-        ${qualifiedLeads().map(l => `<button class="row fin-row" style="grid-template-columns:minmax(0,1fr) auto" data-action="open-lead" data-id="${l.id}"><span class="truncate" style="font-weight:600">${esc(l.business_name)}</span><span class="amt">${l.monthly_value ? money(l.monthly_value) : '<span class="mini faint">No value</span>'}</span></button>`).join('') || '<div class="empty">No qualified leads yet.</div>'}
+        <div class="fin-head"><h3>Qualified pipeline</h3><span class="amt">${money(sum(qualifiedLeads(), l => lv(l.id)))}</span></div>
+        ${qualifiedLeads().map(l => `<button class="row fin-row" style="grid-template-columns:minmax(0,1fr) auto" data-action="open-lead" data-id="${l.id}"><span class="truncate" style="font-weight:600">${esc(l.business_name)}</span><span class="amt">${lv(l.id) ? money(lv(l.id)) : '<span class="mini faint">No value</span>'}</span></button>`).join('') || '<div class="empty">No qualified leads yet.</div>'}
       </div>
     </div>
   </div>`;
@@ -811,7 +803,6 @@ function leadModal(){
     d.email ? `<a href="mailto:${esc(d.email)}">${ICON.mail}Email</a>` : '',
     d.website ? `<a href="${esc(normUrl(d.website))}" target="_blank" rel="noopener">${ICON.globe}Website</a>` : '',
   ].join('');
-  const alreadyClient = S.clients.some(c => c.name.trim().toLowerCase() === (d.business_name||'').trim().toLowerCase());
   return shell(`
     ${head(`<span class="pill n">${m.id ? 'Lead' : 'New lead'}</span>`)}
     <div class="sheet-body">
@@ -832,10 +823,10 @@ function leadModal(){
       </div>
       <div class="sheet-side">
         <div class="field"><label>Stage</label><div class="vseg">${STAGES.map(([v,lbl,col]) => `<button type="button" class="${d.stage===v?'on':''}" data-action="seg" data-field="stage" data-v="${v}"><span class="dot" style="background:${col}"></span>${lbl}</button>`).join('')}</div></div>
-        <div class="field"><label>Monthly value</label><div class="money-inp"><span>R</span><input class="inp" type="number" min="0" step="100" data-f="monthly_value" placeholder="Set once you know the plan" value="${esc(d.monthly_value)}"></div><span class="hint">Counts toward the pipeline once the lead is Qualified.</span></div>
+        ${isAdmin() ? `<div class="field"><label>Monthly value</label><div class="money-inp"><span>R</span><input class="inp" type="number" min="0" step="100" data-f="monthly_value" placeholder="Set once you know the plan" value="${esc(d.monthly_value)}"></div><span class="hint">Counts toward the pipeline at Qualified, and becomes their retainer when Won. Only admins see this.</span></div>` : ''}
         <div class="field"><label>Owner</label><select class="inp" data-f="owner_id"><option value="">No owner</option>${S.people.map(p => `<option value="${p.id}" ${p.id===d.owner_id?'selected':''}>${esc(p.name)}</option>`).join('')}</select></div>
         ${l ? `<div class="mini faint">Added ${fmtDate(l.created_at)}. In this stage since ${fmtDate(l.stage_changed_at || l.created_at)}.</div>` : ''}
-        ${l && l.stage === 'won' && isAdmin() ? (alreadyClient ? '<span class="pill g">Already a client</span>' : '<button class="btn" data-action="lead-convert">Convert to client</button>') : ''}
+        ${l && l.client_id && client(l.client_id) ? `<button class="btn btn-soft btn-sm" data-action="go-client" data-id="${l.client_id}">Open ${esc(client(l.client_id).name)} client page</button>` : (d.stage === 'won' ? '<span class="hint">Saving as Won adds them to your clients automatically.</span>' : '')}
       </div>
     </div>
     <div class="sheet-foot">${m.id ? '<button class="btn-danger" data-action="lead-delete">Delete lead</button>' : ''}<div class="foot-r"><button class="btn btn-soft" data-action="close-modal">Cancel</button><button class="btn" data-action="lead-save">${m.id ? 'Save changes' : 'Add lead'}</button></div></div>
@@ -913,7 +904,7 @@ function openLead(id, preset = {}){
   if(id && !l){ toast('That lead no longer exists', true); return; }
   const draft = l ? {
     business_name:l.business_name, contact_name:l.contact_name||'', phone:l.phone||'', email:l.email||'', website:l.website||'',
-    monthly_value:l.monthly_value ?? '', stage:l.stage, owner_id:l.owner_id||'', details:l.details||'',
+    monthly_value:S.leadValues[l.id] ?? '', stage:l.stage, owner_id:l.owner_id||'', details:l.details||'',
   } : { business_name:'', contact_name:'', phone:'', email:'', website:'', monthly_value:'', stage:preset.stage||'to_call', owner_id:S.me.id, details:'' };
   S.modal = { type:'lead', id, draft, dirty:false, notes:[], note:'' };
   renderModal();
@@ -972,14 +963,33 @@ async function saveLead(){
   const m = S.modal, d = m.draft;
   if(!d.business_name.trim()){ toast('Add the business name first', true); return; }
   const prev = m.id ? S.leads.find(x => x.id === m.id) : null;
-  const val = d.monthly_value === '' || d.monthly_value === null ? null : Number(d.monthly_value);
   const row = { business_name:d.business_name.trim(), contact_name:d.contact_name.trim() || null, phone:d.phone.trim() || null,
-    email:d.email.trim() || null, website:d.website.trim() || null, monthly_value:Number.isFinite(val) ? val : null,
-    stage:d.stage, owner_id:d.owner_id || null, details:d.details.trim() || null };
+    email:d.email.trim() || null, website:d.website.trim() || null, stage:d.stage, owner_id:d.owner_id || null, details:d.details.trim() || null };
   if(!prev || prev.stage !== d.stage) row.stage_changed_at = new Date().toISOString();
-  if(m.id){ if(!(await db(sb.from('hit_list_leads').update(row).eq('id', m.id)))) return; }
-  else if(!(await db(sb.from('hit_list_leads').insert(row)))) return;
-  S.modal = null; renderModal(); toast(m.id ? 'Lead saved' : 'Lead added'); loadAll();
+  if(prev && prev.stage === 'won' && d.stage !== 'won' && !(await confirmUnwin(prev))) return;
+  const raw = d.monthly_value === '' || d.monthly_value === null ? null : Number(d.monthly_value);
+  const value = Number.isFinite(raw) && raw > 0 ? raw : null;
+  const saveValue = async id => {
+    if(!isAdmin() || value === (S.leadValues[id] ?? null)) return true;
+    return value === null
+      ? db(sb.from('lead_values').delete().eq('lead_id', id))
+      : db(sb.from('lead_values').upsert({ lead_id:id, monthly_value:value, updated_at:new Date().toISOString() }));
+  };
+  let id = m.id;
+  if(id){
+    if(!(await saveValue(id))) return;
+    if(!(await db(sb.from('hit_list_leads').update(row).eq('id', id)))) return;
+  } else {
+    const r = await db(sb.from('hit_list_leads').insert(row).select().single()); if(!r) return; id = r.id;
+    if(!(await saveValue(id))) return;
+  }
+  S.modal = null; renderModal();
+  const becameClient = d.stage === 'won' && (!prev || prev.stage !== 'won');
+  toast(becameClient ? `${row.business_name} is now a client` : m.id ? 'Lead saved' : 'Lead added');
+  loadAll();
+}
+async function confirmUnwin(l){
+  return ask(`Move ${l.business_name} out of Won?${isAdmin() ? ' This month\'s retainer comes off revenue, and the client is removed if it has no tasks yet.' : ' The client is removed if it has no tasks yet.'}`, 'Move it', false);
 }
 async function deleteLead(){
   const l = S.leads.find(x => x.id === S.modal.id);
@@ -992,15 +1002,6 @@ async function addNote(){
   if(!(await db(sb.from('hit_list_notes').insert({ lead_id:m.id, author_id:S.me.id, note })))) return;
   await db(sb.from('hit_list_leads').update({ last_contact_at:new Date().toISOString() }).eq('id', m.id));
   m.note = ''; loadNotes(m.id);
-}
-async function convertLead(){
-  const l = S.leads.find(x => x.id === S.modal.id); if(!l) return;
-  if(!(await ask(`Add ${l.business_name} as a client${l.monthly_value ? ` with a ${money(l.monthly_value)} monthly retainer from ${monthLabel(thisMonth())}` : ''}?`, 'Add client', false))) return;
-  const [bg, fg] = TAG_COLOURS[S.clients.length % TAG_COLOURS.length];
-  const c = await db(sb.from('clients').insert({ name:l.business_name, slug:slugify(l.business_name) + '-' + uid().slice(0,4), tag_bg:bg, tag_color:fg }).select().single());
-  if(!c) return;
-  if(l.monthly_value) await db(sb.from('client_retainers').insert({ client_id:c.id, amount:l.monthly_value, start_month:thisMonth() }));
-  S.modal = null; renderModal(); toast(`${l.business_name} is now a client`); await loadAll(); go('client:' + c.id);
 }
 async function saveEvent(){
   const m = S.modal, d = m.draft;
@@ -1091,7 +1092,7 @@ document.addEventListener('click', async e => {
     case 'lead-save': saveLead(); break;
     case 'lead-delete': deleteLead(); break;
     case 'note-add': addNote(); break;
-    case 'lead-convert': convertLead(); break;
+    case 'go-client': S.modal = null; renderModal(); go('client:' + d.id); break;
 
     case 'event-save': saveEvent(); break;
     case 'event-delete': deleteEvent(); break;
@@ -1184,10 +1185,13 @@ document.addEventListener('drop', async e => {
     if(await db(sb.from('tasks').update(patch).eq('id', id))){ if(target === 'complete') toast('Nice, task done'); } else loadAll();
   } else if(kind === 'lead'){
     const l = S.leads.find(x => x.id === id); if(!l || l.stage === target) return;
+    if(l.stage === 'won' && !(await confirmUnwin(l))) return;
     const patch = { stage:target, stage_changed_at:now };
     Object.assign(l, patch); renderView();
-    if(!(await db(sb.from('hit_list_leads').update(patch).eq('id', id)))) loadAll();
-    else if(target === 'qualified' && !l.monthly_value) toast('Qualified. Open the lead to set its monthly value.');
+    if(!(await db(sb.from('hit_list_leads').update(patch).eq('id', id)))){ loadAll(); return; }
+    if(target === 'won') toast(isAdmin() && !lv(id) ? `${l.business_name} is now a client. Add its monthly value to count it in revenue.` : `${l.business_name} is now a client`);
+    else if(target === 'qualified' && isAdmin() && !lv(id)) toast('Qualified. Open the lead to set its monthly value.');
+    loadAll();
   }
 });
 
