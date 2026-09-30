@@ -53,7 +53,8 @@ const SUPABASE_KEY = 'sb_publishable_pAFxHuNsH-MZI0x0Dh4STA_IK6awyHI';
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const app = document.getElementById('app');
-let state = { session: null, people: [], clients: [], tasks: [], leads: [], notes: [], events: [], route: 'dashboard', modal: null, notesFor: null };
+const _now = new Date();
+let state = { session: null, people: [], clients: [], tasks: [], leads: [], notes: [], events: [], route: 'dashboard', modal: null, notesFor: null, calYear: _now.getFullYear(), calMonth: _now.getMonth() };
 
 const NAV_CLIENTS = () => state.clients.filter(c => !c.is_internal || true); // show all, ordered as fetched
 
@@ -376,7 +377,7 @@ function viewTeam(){
 
 function viewCalendar(){
   const now = new Date();
-  const year = now.getFullYear(), month = now.getMonth();
+  const year = state.calYear, month = state.calMonth;
   const first = new Date(year, month, 1);
   const startWeekday = first.getDay();
   const daysInMonth = new Date(year, month+1, 0).getDate();
@@ -390,7 +391,14 @@ function viewCalendar(){
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
       <div><h1 style="margin:0;font-size:28px;font-weight:800;letter-spacing:-0.02em;">Calendar</h1>
       <p style="margin:2px 0 0;font-size:13px;color:var(--muted);">${first.toLocaleDateString('en-ZA',{month:'long',year:'numeric'})}</p></div>
-      <button class="btn-dark" id="add-event-btn">+ New Event</button>
+      <div style="display:flex;align-items:center;gap:10px;">
+        <div style="display:flex;align-items:center;gap:2px;background:#E8E8ED;border-radius:999px;padding:3px;">
+          <button id="cal-prev" style="width:30px;height:30px;border:none;border-radius:999px;background:#fff;font-weight:700;box-shadow:0 1px 2px rgba(0,0,0,0.08);">‹</button>
+          <button id="cal-today" style="border:none;border-radius:999px;background:transparent;font-size:12px;font-weight:600;color:var(--muted);padding:0 12px;height:30px;">Today</button>
+          <button id="cal-next" style="width:30px;height:30px;border:none;border-radius:999px;background:#fff;font-weight:700;box-shadow:0 1px 2px rgba(0,0,0,0.08);">›</button>
+        </div>
+        <button class="btn-dark" id="add-event-btn">+ New Event</button>
+      </div>
     </div>
     <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:1px;background:#E8E8ED;border-radius:12px 12px 0 0;overflow:hidden;">
       ${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(w=>`<div style="background:#FAFAFB;padding:8px;text-align:center;font-size:11px;font-weight:700;color:var(--faint);">${w}</div>`).join('')}
@@ -469,6 +477,9 @@ function wireEvents(){
   }));
   const addLeadBtn = document.getElementById('add-lead-btn'); if(addLeadBtn) addLeadBtn.addEventListener('click', ()=>{ state.modal='new-lead'; render(); });
   const addEventBtn = document.getElementById('add-event-btn'); if(addEventBtn) addEventBtn.addEventListener('click', ()=>{ state.modal='new-event'; render(); });
+  const calPrev = document.getElementById('cal-prev'); if(calPrev) calPrev.addEventListener('click', ()=>{ state.calMonth--; if(state.calMonth<0){state.calMonth=11; state.calYear--;} render(); });
+  const calNext = document.getElementById('cal-next'); if(calNext) calNext.addEventListener('click', ()=>{ state.calMonth++; if(state.calMonth>11){state.calMonth=0; state.calYear++;} render(); });
+  const calToday = document.getElementById('cal-today'); if(calToday) calToday.addEventListener('click', ()=>{ state.calMonth=_now.getMonth(); state.calYear=_now.getFullYear(); render(); });
 
   const backdrop = document.getElementById('modal-backdrop');
   if(backdrop){
