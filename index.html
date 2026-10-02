@@ -111,6 +111,17 @@ button.row:hover{background:#FAFAFB}
 .person-card:hover{border-color:#E4E4E7}
 .empty{padding:18px 20px;color:var(--faint);font-size:13.5px}
 
+/* Leaderboard */
+.lb-row{grid-template-columns:40px 34px 170px minmax(0,1fr) 44px;padding-top:11px;padding-bottom:11px}
+.lb-row.me{background:#F7F9FE}
+.lb-rank{font-size:13px;font-weight:800;color:var(--faint)}
+.lb-rank.lead{font-size:17px}
+.lb-track{height:10px;background:#EEEEF2;border-radius:999px;overflow:hidden}
+.lb-fill{display:block;height:100%;background:var(--blue);border-radius:999px;transition:width .4s ease}
+.lb-fill.lead{background:var(--accent)}
+.lb-n{justify-self:end;font-size:18px;font-weight:800;font-variant-numeric:tabular-nums}
+@media (max-width:1000px){.lb-row{grid-template-columns:36px 34px 120px minmax(0,1fr) 40px}}
+
 /* Boards */
 .board{display:grid;grid-template-columns:repeat(var(--cols),minmax(0,1fr));gap:14px;align-items:start}
 .col{display:flex;flex-direction:column;gap:10px;min-height:240px;border-radius:18px;padding:4px;transition:background .15s}
@@ -419,6 +430,16 @@ button.row:hover{background:#FAFAFB}
 .m-stat-v{font-size:22px;font-weight:700;letter-spacing:.35px;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .m-stat-s{font-size:12px;color:var(--m2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
+.m-search{display:flex;align-items:center;gap:6px;margin:0 16px 4px;background:rgba(118,118,128,.12);border-radius:10px;padding:0 10px;height:38px;color:var(--m2)}
+.m-search svg{width:17px;height:17px;flex-shrink:0}
+.m-search input{flex:1;min-width:0;border:none;background:none;outline:none;font-size:17px!important;letter-spacing:-.4px;color:#000;font-family:inherit;-webkit-appearance:none}
+
+.m-lb-rank{width:24px;text-align:center;font-size:15px;font-weight:700;color:var(--m2);flex-shrink:0}
+.m-lb-rank.lead{font-size:18px}
+.m-lb-track{height:6px;background:rgba(118,118,128,.14);border-radius:999px;overflow:hidden;margin-top:6px}
+.m-lb-track span{display:block;height:100%;border-radius:999px}
+.m-lb-n{font-size:22px;font-weight:700;letter-spacing:.35px;font-variant-numeric:tabular-nums;flex-shrink:0;min-width:28px;text-align:right}
+
 /* Tab bar */
 .m-tabs{position:fixed;left:0;right:0;bottom:0;z-index:40;display:grid;grid-template-columns:repeat(5,1fr);padding:7px 2px calc(env(safe-area-inset-bottom) + 2px);background:rgba(249,249,249,.86);-webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);border-top:.5px solid var(--sep)}
 .m-tab{border:none;background:none;display:flex;flex-direction:column;align-items:center;gap:3px;color:#8E8E93;font-size:10px;font-weight:500;letter-spacing:.1px;padding:0 0 6px;min-height:49px;font-family:inherit}
@@ -534,6 +555,7 @@ const S = {
   finMonth:null,
   stack:[], histDepth:0, navAnim:'', calAnim:'', skipAnim:false, scroll:{}, mStatus:{}, mFilter:null,
   taskScope:'my-tasks', leadStage:'to_call', calSel:null, pendingRender:false,
+  archive:{}, archLoading:null, archMonth:null, archQuery:'', doneWeekCount:null, scores:[],
 };
 
 /* ================= Helpers ================= */
@@ -554,6 +576,7 @@ const uid = () => Math.random().toString(36).slice(2,10);
 const plural = (n,w) => `${n} ${w}${n===1?'':'s'}`;
 const person = id => S.people.find(p => p.id === id);
 const client = id => S.clients.find(c => c.id === id);
+const findTask = id => S.tasks.find(x => x.id === id) || Object.values(S.archive).flat().find(x => x.id === id);
 const assigneeIds = taskId => S.assignees.filter(a => a.task_id === taskId).map(a => a.person_id);
 const assigneesOf = taskId => assigneeIds(taskId).map(person).filter(Boolean);
 const isAdmin = () => !!(S.me && S.me.is_admin);
@@ -636,14 +659,21 @@ async function loadAll(){
   const res = await Promise.all([
     sb.from('people').select('*').order('created_at').order('name'),
     sb.from('clients').select('*').order('name'),
-    sb.from('tasks').select('*').order('created_at',{ascending:false}),
-    sb.from('task_assignees').select('*'),
+    sb.from('tasks').select('*').eq('archived', false).order('created_at',{ascending:false}),
+    sb.from('task_assignees').select('task_id, person_id, tasks!inner(archived)').eq('tasks.archived', false),
     sb.from('hit_list_leads').select('*').order('created_at',{ascending:false}),
     sb.from('calendar_events').select('*').order('event_date'),
   ]);
   const failed = res.find(r => r.error);
   if(failed) toast(failed.error.message, true);
   [S.people, S.clients, S.tasks, S.assignees, S.leads, S.events] = res.map(r => r.data || []);
+  S.assignees = S.assignees.map(a => ({ task_id:a.task_id, person_id:a.person_id }));
+  Object.values(S.archive).forEach(list => list.forEach(t => (t._assignees || []).forEach(pid => S.assignees.push({ task_id:t.id, person_id:pid }))));
+  const weekAgoIso = new Date(Date.now() - 7*864e5).toISOString();
+  const dw = await sb.from('tasks').select('id', { count:'exact', head:true }).eq('status','complete').gte('completed_at', weekAgoIso);
+  S.doneWeekCount = dw.error ? null : dw.count;
+  const sc = await sb.rpc('month_scores');
+  S.scores = sc.error ? [] : (sc.data || []);
   const ORDER = ['Connor','Matt','Chantal','Mike'];
   S.people.sort((a,b) => (ORDER.indexOf(a.name)+99)%99 - (ORDER.indexOf(b.name)+99)%99 || a.name.localeCompare(b.name));
   S.me = S.people.find(p => p.auth_user_id === S.session?.user?.id) || null;
@@ -751,6 +781,7 @@ function sidebarHTML(){
       ${item('projects','Projects')}
       ${item('calendar','Calendar')}
       ${item('team','Team')}
+      ${item('archive','Archive')}
       ${isAdmin() ? item('finance','Finance') : ''}
     </nav>
     <div class="me">${av(S.me,30)}<div style="min-width:0"><div class="me-name truncate">${esc(S.me.name)}</div><button class="me-out" data-action="logout">Sign out</button></div></div>
@@ -762,6 +793,7 @@ function pageHTML(){
   if(r === 'dashboard') return pageDashboard();
   if(r === 'my-tasks') return pageBoard({ title:'My tasks', sub:'Everything assigned to you', tasks:S.tasks.filter(t => assigneeIds(t.id).includes(S.me.id)), preset:{person:S.me.id} });
   if(r === 'all-tasks') return pageBoard({ title:'All tasks', sub:'Every client, one board', tasks:S.tasks });
+  if(r === 'archive') return pageArchive();
   if(r === 'projects') return pageBoard({ title:'Projects', sub:'Internal work that isn\'t tied to a client', tasks:S.tasks.filter(t => !t.client_id), showClient:false });
   if(r === 'hit-list') return pageHitList();
   if(r === 'calendar') return pageCalendar();
@@ -816,8 +848,9 @@ function pageDashboard(){
     ${tile('Open tasks', open.length, 'Across every client', 'all-tasks')}
     ${tile('Due today', dueToday.length, dueToday.length ? dueToday.map(x => client(x.client_id)?.name || 'Internal').join(', ') : 'Nothing due today', 'all-tasks', dueToday.length ? 'var(--amber)' : '')}
     ${tile('Overdue', overdue.length, overdue.length ? overdue[0].title : 'Nothing overdue', 'all-tasks', overdue.length ? 'var(--red)' : '')}
-    ${tile('Done this week', doneWeek.length, doneWeek.length ? 'Nice work, team' : 'Get the first one in', 'all-tasks', 'var(--green)')}
+    ${tile('Done this week', S.doneWeekCount ?? doneWeek.length, (S.doneWeekCount ?? doneWeek.length) ? 'Nice work, team' : 'Get the first one in', 'all-tasks', 'var(--green)')}
   </div>
+  ${leaderboardHTML()}
   <div class="tiles">${leadTiles}</div>
   <section><h2 class="h2">Workload</h2><div class="people-grid">
     ${workload.map(w => `<button class="person-card" data-action="go" data-route="member:${w.p.id}">${av(w.p,38)}<div style="min-width:0"><div style="font-weight:700;font-size:14px">${esc(w.p.name)}</div><div class="mini">${w.n} open${w.late?`, <span style="color:var(--red)">${w.late} overdue</span>`:''}</div></div></button>`).join('')}
@@ -863,7 +896,8 @@ function pageBoard({ title, sub, tasks, preset = {}, showClient = true, back = n
       return `<div class="col" data-drop="task:${st}">
         <div class="col-head"><span class="col-title">${label}</span><span class="count">${list.length + older.length}</span></div>
         ${list.map(x => taskCard(x, showClient)).join('') || (older.length ? '' : '<div class="empty-drop">Drop tasks here</div>')}
-        ${older.length ? `<button class="older-toggle" data-action="toggle-older">${showOld ? 'Hide' : 'Show'} ${older.length} older</button>${showOld ? older.map(x => taskCard(x, showClient)).join('') : ''}` : ''}
+        ${older.length ? `<button class="older-toggle" data-action="toggle-older">${showOld ? 'Hide' : 'Show'} ${older.length} earlier this month</button>${showOld ? older.map(x => taskCard(x, showClient)).join('') : ''}` : ''}
+        ${st === 'complete' ? '<button class="older-toggle" data-action="go" data-route="archive">View archive</button>' : ''}
       </div>`;
     }).join('')}
   </div>`;
@@ -1017,6 +1051,135 @@ function pageFinance(){
   </div>`;
 }
 
+/* ---------- Monthly leaderboard ---------- */
+function leaderboard(){
+  const list = S.people.map(p => ({ p, n:(S.scores.find(s => s.person_id === p.id) || {}).completed || 0 }))
+    .sort((a,b) => b.n - a.n || a.p.name.localeCompare(b.p.name));
+  let rank = 0, prev = -1;
+  list.forEach((r,i) => { if(r.n !== prev){ rank = i + 1; prev = r.n; } r.rank = rank; });
+  const top = list[0] ? list[0].n : 0;
+  const leaders = list.filter(r => r.n === top && top > 0);
+  const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0,0,0,0);
+  const teamDone = S.tasks.filter(t => t.status === 'complete' && t.completed_at && new Date(t.completed_at) >= monthStart).length;
+  const mine = list.find(r => r.p.id === S.me.id);
+  let gap = '';
+  if(mine){
+    if(!top) gap = 'Nobody has scored yet this month. First tick takes the lead.';
+    else if(mine.n === top) gap = leaders.length > 1 ? `You're tied for 1st with ${mine.n}.` : `You're leading by ${top - (list.find(r => r.n < top) || { n:0 }).n}.`;
+    else gap = `You're ${top - mine.n} behind ${leaders[0].p.name}.`;
+  }
+  const now = new Date();
+  const month = now.toLocaleDateString('en-ZA', { month:'long' });
+  const resets = new Date(now.getFullYear(), now.getMonth() + 1, 1).toLocaleDateString('en-ZA', { day:'numeric', month:'long' });
+  return { list, top, leaders, teamDone, gap, month, resets };
+}
+function leaderboardHTML(){
+  const b = leaderboard();
+  return `<section>
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:10px">
+      <h2 class="h2" style="margin:0">${esc(b.month)} tasks completed</h2>
+      <span class="mini">${b.teamDone} in total. Resets on ${esc(b.resets)}.</span>
+    </div>
+    <div class="list">
+      ${b.list.map(r => { const isMe = r.p.id === S.me.id, lead = b.top && r.n === b.top;
+        return `<button class="row lb-row ${isMe ? 'me' : ''}" data-action="go" data-route="member:${r.p.id}">
+          <span class="lb-rank ${lead ? 'lead' : ''}">${lead ? '&#128081;' : '#' + r.rank}</span>
+          ${av(r.p,30)}
+          <span class="truncate" style="font-weight:700;font-size:14px">${esc(r.p.name)}${isMe ? ' <span class="pill b" style="margin-left:4px">You</span>' : ''}</span>
+          <span class="lb-track"><span class="lb-fill ${lead ? 'lead' : ''}" style="width:${b.top && r.n ? Math.max(3, Math.round(r.n / b.top * 100)) : 0}%"></span></span>
+          <span class="lb-n">${r.n}</span>
+        </button>`; }).join('')}
+    </div>
+    <p class="sub" style="margin-top:8px">${esc(b.gap)}</p>
+  </section>`;
+}
+function mLeaderboardHTML(){
+  const b = leaderboard();
+  return `<div class="m-ghead split"><span>${esc(b.month)} tasks completed</span><span>${b.teamDone} total</span></div>
+    <div class="m-group">${b.list.map(r => { const isMe = r.p.id === S.me.id, lead = b.top && r.n === b.top;
+      return `<button class="m-row tap" data-action="go" data-route="member:${r.p.id}" style="--inset:96px">
+        <span class="m-lb-rank ${lead ? 'lead' : ''}">${lead ? '&#128081;' : r.rank}</span>${av(r.p,34)}
+        <div class="m-row-main"><div class="m-row-title">${esc(r.p.name)}${isMe ? ' <span class="m-tag" style="background:rgba(28,111,224,.12);color:var(--tint)">You</span>' : ''}</div>
+          <div class="m-lb-track"><span style="width:${b.top && r.n ? Math.max(3, Math.round(r.n / b.top * 100)) : 0}%;background:${lead ? 'var(--accent)' : 'var(--tint)'}"></span></div></div>
+        <span class="m-lb-n">${r.n}</span></button>`; }).join('')}</div>
+    <div class="m-gfoot">${esc(b.gap)} Resets on ${esc(b.resets)}.</div>`;
+}
+
+/* ---------- Archive ---------- */
+const archMonthKey = () => S.archMonth || shiftMonth(thisMonth(), -1);
+const saBoundary = k => k + 'T00:00:00+02:00';
+async function loadArchive(k){
+  if(S.archLoading === k) return;
+  S.archLoading = k;
+  const { data, error } = await sb.from('tasks').select('*').eq('archived', true)
+    .gte('completed_at', saBoundary(k)).lt('completed_at', saBoundary(shiftMonth(k,1))).order('completed_at', { ascending:false });
+  if(error){ toast(error.message, true); S.archLoading = null; return; }
+  const list = data || [];
+  if(list.length){
+    const { data:as } = await sb.from('task_assignees').select('task_id, person_id').in('task_id', list.map(t => t.id));
+    list.forEach(t => { t._assignees = (as || []).filter(a => a.task_id === t.id).map(a => a.person_id); });
+    const have = new Set(S.assignees.map(a => a.task_id + a.person_id));
+    (as || []).forEach(a => { if(!have.has(a.task_id + a.person_id)) S.assignees.push(a); });
+  }
+  S.archive[k] = list; S.archLoading = null;
+  if(S.route === 'archive') renderView();
+}
+function archiveFiltered(k){
+  const q = S.archQuery.trim().toLowerCase(), list = S.archive[k] || [];
+  if(!q) return list;
+  return list.filter(t => [t.title, t.description, client(t.client_id)?.name, ...assigneesOf(t.id).map(p => p.name)].filter(Boolean).join(' ').toLowerCase().includes(q));
+}
+function archiveGroups(list){
+  const groups = {};
+  list.forEach(t => { const key = t.client_id || '_internal'; (groups[key] = groups[key] || []).push(t); });
+  return Object.entries(groups).sort((a,b) => b[1].length - a[1].length);
+}
+function archiveResultsHTML(){
+  const k = archMonthKey();
+  if(!S.archive[k]) return '<div class="center" style="min-height:200px"><div class="spinner"></div></div>';
+  const list = archiveFiltered(k);
+  if(!S.archive[k].length) return `<div class="empty">Nothing archived for ${monthLabel(k)}.</div>`;
+  if(!list.length) return `<div class="empty">No archived tasks in ${monthLabel(k)} match "${esc(S.archQuery)}".</div>`;
+  return archiveGroups(list).map(([cid, tasks]) => `<div class="list" style="margin-bottom:16px">
+      <div class="row" style="grid-template-columns:minmax(0,1fr) auto;padding-top:14px;padding-bottom:10px"><span>${clientPill(cid === '_internal' ? null : client(cid))}</span><span class="mini">${plural(tasks.length,'task')}</span></div>
+      ${tasks.map(t => `<button class="row" data-action="open-task" data-id="${t.id}" style="grid-template-columns:minmax(0,1fr) 110px 120px">
+        <span class="truncate" style="font-weight:600;font-size:14px">${esc(t.title)}</span>
+        <span>${stack(assigneesOf(t.id))}</span>
+        <span class="mini end">Done ${fmtDate(t.completed_at)}</span></button>`).join('')}
+    </div>`).join('');
+}
+function pageArchive(){
+  const k = archMonthKey(), last = shiftMonth(thisMonth(), -1);
+  if(!S.archive[k]) loadArchive(k);
+  const total = S.archive[k] ? S.archive[k].length : null;
+  return `
+  <div class="page-head"><div><h1 class="h1">Archive</h1><p class="sub">${total === null ? 'Loading' : `${plural(total,'task')} completed in ${monthLabel(k)}`}. Tasks move here on the 1st of each month.</p></div>
+    <div class="head-actions">
+      <input class="inp" style="width:220px" type="search" placeholder="Search this month" value="${esc(S.archQuery)}" data-archive-search>
+      <div class="seg nav-seg"><button data-action="arch-prev" aria-label="Previous month">‹</button><button data-action="arch-last">${esc(monthLabel(k))}</button><button data-action="arch-next" aria-label="Next month" ${k >= last ? 'disabled style="opacity:.35"' : ''}>›</button></div>
+    </div></div>
+  <div id="archive-results">${archiveResultsHTML()}</div>`;
+}
+function mArchiveResultsHTML(){
+  const k = archMonthKey();
+  if(!S.archive[k]) return '<div class="center" style="min-height:160px"><div class="spinner"></div></div>';
+  const list = archiveFiltered(k);
+  if(!S.archive[k].length) return mEmpty(`Nothing archived for ${monthLabel(k)}`, 'Completed tasks move here on the 1st of each month.');
+  if(!list.length) return mEmpty('No matches', `Nothing in ${monthLabel(k)} matches "${esc(S.archQuery)}".`);
+  return archiveGroups(list).map(([cid, tasks]) => { const c = cid === '_internal' ? null : client(cid);
+    return `<div class="m-ghead split"><span>${esc(c ? c.name : 'Internal projects')}</span><span>${tasks.length}</span></div><div class="m-group">${tasks.map(t => mTaskRow(t, false)).join('')}</div>`; }).join('');
+}
+function mArchive(){
+  const k = archMonthKey(), last = shiftMonth(thisMonth(), -1);
+  if(!S.archive[k]) loadArchive(k);
+  const total = S.archive[k] ? S.archive[k].length : null;
+  return mPage({ title:'Archive', body:`
+    <div class="m-month"><button class="m-icon-btn" data-action="arch-prev" aria-label="Previous month">${I.chevL}</button><button class="m-month-l" data-action="arch-last"><b>${monthLabel(k)}</b><span>${total === null ? 'Loading' : plural(total,'task') + ' completed'}</span></button><button class="m-icon-btn" data-action="arch-next" aria-label="Next month" ${k >= last ? 'disabled style="opacity:.3"' : ''}>${I.chevR}</button></div>
+    <div class="m-search">${I.search}<input type="search" placeholder="Search this month" value="${esc(S.archQuery)}" data-archive-search></div>
+    <div id="archive-results">${mArchiveResultsHTML()}</div>
+    <div class="m-gfoot">Open any task and set it to Open or In progress to bring it back.</div>` });
+}
+
 /* ================= Modals ================= */
 function modalHTML(){
   const m = S.modal, mob = isMobile();
@@ -1032,7 +1195,7 @@ const shell = (inner, cls = '') => { const anim = S.modal._shown ? '' : 'anim'; 
 const head = left => `<div class="sheet-head"><div>${left}</div><button class="x" data-action="close-modal" aria-label="Close">×</button></div>`;
 
 function taskModal(){
-  const m = S.modal, d = m.draft, t = m.id ? S.tasks.find(x => x.id === m.id) : null;
+  const m = S.modal, d = m.draft, t = m.id ? findTask(m.id) : null;
   const creator = t && person(t.created_by);
   const doneN = d.checklist.filter(i => i.done).length;
   return shell(`
@@ -1149,7 +1312,7 @@ function amountModal(){
 
 /* ================= Openers ================= */
 function openTask(id, preset = {}){
-  const t = id ? S.tasks.find(x => x.id === id) : null;
+  const t = id ? findTask(id) : null;
   if(id && !t){ toast('That task no longer exists', true); return; }
   const draft = t ? {
     title:t.title, description:t.description||'', status:t.status, priority:t.priority, client_id:t.client_id||'', due_date:t.due_date||'',
@@ -1201,11 +1364,11 @@ async function closeModal(){
 async function saveTask(){
   const m = S.modal, d = m.draft;
   if(!d.title.trim()){ toast('Give the task a name first', true); return; }
-  const prev = m.id ? S.tasks.find(x => x.id === m.id) : null;
+  const prev = m.id ? findTask(m.id) : null;
   const row = { title:d.title.trim(), description:d.description.trim() || null, status:d.status, priority:d.priority,
     client_id:d.client_id || null, due_date:d.due_date || null, checklist:d.checklist, updated_at:new Date().toISOString() };
   if(d.status === 'complete'){ if(!prev || prev.status !== 'complete') row.completed_at = new Date().toISOString(); }
-  else row.completed_at = null;
+  else { row.completed_at = null; row.archived = false; }
   let id = m.id;
   if(id){ if(!(await db(sb.from('tasks').update(row).eq('id', id)))) return; }
   else {
@@ -1214,13 +1377,13 @@ async function saveTask(){
   }
   if(m.id && !(await db(sb.from('task_assignees').delete().eq('task_id', id)))) return;
   if(d.assignees.length && !(await db(sb.from('task_assignees').insert(d.assignees.map(p => ({ task_id:id, person_id:p })))))) return;
-  dismissModal(); toast(m.id ? 'Task saved' : 'Task created'); loadAll();
+  S.archive = {}; dismissModal(); toast(m.id ? 'Task saved' : 'Task created'); loadAll();
 }
 async function deleteTask(){
-  const t = S.tasks.find(x => x.id === S.modal.id);
+  const t = findTask(S.modal.id);
   if(!(await ask(`Delete "${t?.title || 'this task'}"? This can't be undone.`))) return;
   if(!(await db(sb.from('tasks').delete().eq('id', S.modal.id)))) return;
-  dismissModal(); toast('Task deleted'); loadAll();
+  S.archive = {}; dismissModal(); toast('Task deleted'); loadAll();
 }
 async function addComment(){
   const m = S.modal, body = (m.comment || '').trim(); if(!body) return;
@@ -1346,11 +1509,13 @@ const I = {
   folder: svg('<path d="M3.5 7.5a2 2 0 0 1 2-2h3.8l2 2.2h7.2a2 2 0 0 1 2 2v7.8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>', 2),
   people: svg('<circle cx="9" cy="8.5" r="3.2"/><path d="M3 19.5c.7-3.2 3-5 6-5s5.3 1.8 6 5"/><path d="M15.5 5.6a3.2 3.2 0 0 1 0 5.8M17.5 14.8c1.8.6 3 2.2 3.5 4.7"/>', 2),
   chart: svg('<path d="M5 19v-8M10.5 19V5M16 19v-6M3 19.5h18"/>', 2.2),
+  archive: svg('<rect x="3" y="4" width="18" height="5" rx="1.5"/><path d="M5 9v9.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V9M10 13h4"/>', 2),
+  search: svg('<circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/>', 2.2),
 };
 
 function ancestry(r){
   if(r.startsWith('member:')) return ['more','team'];
-  if(r.startsWith('client:') || ['team','projects','finance'].includes(r)) return ['more'];
+  if(r.startsWith('client:') || ['team','projects','finance','archive'].includes(r)) return ['more'];
   return [];
 }
 function tabOf(r){
@@ -1370,6 +1535,7 @@ function routeTitle(r){
   if(r === 'more') return 'More';
   if(r === 'team') return 'Team';
   if(r === 'projects') return 'Projects';
+  if(r === 'archive') return 'Archive';
   if(r === 'finance') return 'Finance';
   if(r.startsWith('client:')) return client(r.slice(7))?.name || 'Client';
   if(r.startsWith('member:')) return person(r.slice(7))?.name || 'Team';
@@ -1443,6 +1609,7 @@ function mPageHTML(){
   if(r === 'calendar') return mCalendar();
   if(r === 'more') return mMore();
   if(r === 'team') return mTeam();
+  if(r === 'archive') return mArchive();
   if(r === 'projects') return mPage({ title:'Projects', sub:'Internal work', right:plusBtn('new-task'), body:mTaskList(S.tasks.filter(t => !t.client_id), 'projects', { showClient:false }) });
   if(r === 'finance') return isAdmin() ? mFinance() : mPage({ title:'Finance', body:mEmpty('Admins only', 'Finance is only visible to admins.') });
   if(r.startsWith('client:')){
@@ -1500,8 +1667,9 @@ function mTaskList(tasks, key, { showClient = true } = {}){
     const recent = list.filter(x => !(x.completed_at && x.completed_at < cutoff)), older = list.filter(x => x.completed_at && x.completed_at < cutoff);
     const showOld = S.showOlder[key];
     if(recent.length) out += `<div class="m-ghead">Last 7 days</div><div class="m-group">${recent.map(x => mTaskRow(x, showClient)).join('')}</div>`;
-    if(older.length) out += `<div class="m-ghead">Older</div><div class="m-group">${showOld ? older.map(x => mTaskRow(x, showClient)).join('') : ''}<button class="m-row tap m-link-row" data-action="toggle-older">${showOld ? 'Hide' : 'Show'} ${plural(older.length,'older task')}</button></div>`;
-    if(!list.length) out = mEmpty('Nothing done yet', 'Tap the circle on a task to complete it.');
+    if(older.length) out += `<div class="m-ghead">Earlier this month</div><div class="m-group">${showOld ? older.map(x => mTaskRow(x, showClient)).join('') : ''}<button class="m-row tap m-link-row" data-action="toggle-older">${showOld ? 'Hide' : 'Show'} ${plural(older.length,'task')}</button></div>`;
+    if(!list.length) out = mEmpty('Nothing done yet this month', 'Tap the circle on a task to complete it.');
+    out += '<div class="m-group m-gap"><button class="m-row tap m-link-row" data-action="go" data-route="archive">View archive</button></div><div class="m-gfoot">Completed tasks move to the archive on the 1st of each month.</div>';
   } else {
     const groups = {};
     sortByDue(list).forEach(x => { (groups[dueBucket(x)] = groups[dueBucket(x)] || []).push(x); });
@@ -1531,8 +1699,9 @@ function mHome(){
         ${card('today','Due today',dueToday,'var(--iorange)',I.today)}
         ${card('overdue','Overdue',overdue,'var(--ired)',I.alert)}
         ${card('open','Open',open.length,'var(--tint)',I.tray)}
-        ${card('done','Done this week',doneWeek,'var(--igreen)',I.done)}
+        ${card('done','Done this week',S.doneWeekCount ?? doneWeek,'var(--igreen)',I.done)}
       </div>
+      ${mLeaderboardHTML()}
       <div class="m-ghead">Hit list</div>
       <div class="m-group">
         ${stageRow('to_call','To call',S.leads.filter(l => l.stage==='to_call').length,'#8E8E93')}
@@ -1621,6 +1790,7 @@ function mMore(){
     <div class="m-group">
       ${row('projects','Projects',I.folder,'#1C6FE0', S.tasks.filter(t => !t.client_id && t.status !== 'complete').length || '')}
       ${row('team','Team',I.people,'#F04A2B')}
+      ${row('archive','Archive',I.archive,'#8E8E93')}
       ${isAdmin() ? row('finance','Finance',I.chart,'#34C759') : ''}
     </div>
     <div class="m-group" style="margin-top:32px"><button class="m-row tap m-destructive" data-action="logout">Sign Out</button></div>
@@ -1665,7 +1835,7 @@ function mSheet(title, saveAction, saveLabel, body){
   </div></div>`;
 }
 function mTaskSheet(){
-  const m = S.modal, d = m.draft, t = m.id ? S.tasks.find(x => x.id === m.id) : null, creator = t && person(t.created_by);
+  const m = S.modal, d = m.draft, t = m.id ? findTask(m.id) : null, creator = t && person(t.created_by);
   const doneN = d.checklist.filter(i => i.done).length;
   return mSheet(m.id ? 'Task' : 'New Task', 'task-save', m.id ? 'Save' : 'Add', `
     <div class="m-group m-first"><textarea class="m-title-inp grow" rows="1" data-f="title" placeholder="Task name" enterkeyhint="done">${esc(d.title)}</textarea><textarea class="m-notes grow" data-f="description" placeholder="Details, links, what done looks like">${esc(d.description)}</textarea></div>
@@ -1810,6 +1980,7 @@ async function setTaskStatus(id, target, delay = 0){
   const t = S.tasks.find(x => x.id === id); if(!t || t.status === target) return;
   const now = new Date().toISOString();
   const patch = { status:target, updated_at:now, completed_at: target === 'complete' ? now : null };
+  if(target !== 'complete') patch.archived = false;
   Object.assign(t, patch);
   if(delay) setTimeout(renderView, delay); else renderView();
   if(await db(sb.from('tasks').update(patch).eq('id', id))){ if(target === 'complete') toast('Nice, task done'); }
@@ -1974,6 +2145,9 @@ document.addEventListener('click', async e => {
     case 'cal-next': S.cal.m++; if(S.cal.m > 11){ S.cal.m = 0; S.cal.y++; } S.calSel = null; S.calAnim = 'cal-next'; renderView(); break;
     case 'cal-today': { const n = new Date(); S.cal = { y:n.getFullYear(), m:n.getMonth() }; S.calSel = today(); renderView(); break; }
 
+    case 'arch-prev': S.archMonth = shiftMonth(archMonthKey(), -1); renderView(); break;
+    case 'arch-next': { const nx = shiftMonth(archMonthKey(), 1); if(nx <= shiftMonth(thisMonth(), -1)){ S.archMonth = nx; renderView(); } break; }
+    case 'arch-last': S.archMonth = null; renderView(); break;
     case 'fin-prev': S.finMonth = shiftMonth(finMonth(), -1); renderView(); break;
     case 'fin-next': S.finMonth = shiftMonth(finMonth(), 1); renderView(); break;
     case 'fin-now': S.finMonth = null; renderView(); break;
@@ -2010,6 +2184,12 @@ document.addEventListener('click', async e => {
 
 document.addEventListener('input', e => {
   if(e.target.classList?.contains('grow')) autoGrow(e.target);
+  if(e.target.hasAttribute?.('data-archive-search')){
+    S.archQuery = e.target.value;
+    const box = document.getElementById('archive-results');
+    if(box) box.innerHTML = isMobile() ? mArchiveResultsHTML() : archiveResultsHTML();
+    return;
+  }
   const m = S.modal; if(!m) return;
   const f = e.target.dataset.f, k = e.target.dataset.m;
   if(f && m.draft){ m.draft[f] = e.target.value; m.dirty = true; }
