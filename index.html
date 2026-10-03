@@ -111,6 +111,14 @@ button.row:hover{background:#FAFAFB}
 .person-card:hover{border-color:#E4E4E7}
 .empty{padding:18px 20px;color:var(--faint);font-size:13.5px}
 
+/* Completion details */
+.done-meta{display:flex;gap:14px;font-size:11.5px;color:var(--muted)}
+.done-meta b{font-weight:700;color:var(--text);margin-left:2px}
+.done-box{display:flex;align-items:center;justify-content:space-between;gap:10px;background:#fff;border:1px solid #E4E4E7;border-radius:12px;padding:10px 12px}
+.done-box-date{font-size:14px;font-weight:700}
+.arch-row{grid-template-columns:minmax(0,1fr) 100px 80px 80px 130px}
+@media (max-width:1000px){.arch-row{grid-template-columns:minmax(0,1fr) 80px 64px 64px 112px}}
+
 /* Leaderboard */
 .lb-row{grid-template-columns:40px 34px 170px minmax(0,1fr) 44px;padding-top:11px;padding-bottom:11px}
 .lb-row.me{background:#F7F9FE}
@@ -327,6 +335,7 @@ button.row:hover{background:#FAFAFB}
 .m-cl{display:inline-flex;align-items:center;gap:5px;min-width:0;overflow:hidden;text-overflow:ellipsis}
 .m-tag{display:inline-flex;align-items:center;padding:1px 7px;border-radius:6px;font-size:12px;font-weight:600;background:rgba(118,118,128,.12);color:var(--m2);flex-shrink:0}
 .m-tag.g{background:rgba(52,199,89,.15);color:#248A3D}
+.m-tag.r{background:rgba(255,59,48,.12);color:#D70015}
 .m-link-row{justify-content:center;color:var(--tint)}
 .m-link{border:none;background:none;color:var(--tint);font-size:15px;padding:6px 0;font-family:inherit}
 .m-destructive{justify-content:center;color:var(--ired)}
@@ -567,8 +576,12 @@ const thisMonth = () => { const n = new Date(); return mkey(n.getFullYear(), n.g
 const shiftMonth = (k,n) => { const [y,m] = k.split('-').map(Number); return mkey(y, m-1+n); };
 const monthLabel = k => { const [y,m] = k.split('-').map(Number); return new Date(y,m-1,1).toLocaleDateString('en-ZA',{month:'long',year:'numeric'}); };
 const parseDay = k => { const [y,m,d] = k.split('-').map(Number); return new Date(y,m-1,d); };
-const fmtDate = ts => new Date(ts).toLocaleDateString('en-ZA',{day:'numeric',month:'short'});
-const fmtDateTime = ts => new Date(ts).toLocaleString('en-ZA',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
+const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const WKD = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+const shortDate = d => `${d.getDate()} ${MON[d.getMonth()]}`;
+const longDate = d => `${WKD[d.getDay()]} ${d.getDate()} ${MON[d.getMonth()]}`;
+const fmtDate = ts => shortDate(new Date(ts));
+const fmtDateTime = ts => { const d = new Date(ts); return `${shortDate(d)}, ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
 const money = n => { const v = Math.round(Number(n)||0); return (v<0?'-':'') + 'R' + Math.abs(v).toLocaleString('en-ZA'); };
 const esc = s => (s ?? '').toString().replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const sum = (arr,f) => arr.reduce((a,x) => a + (Number(f(x))||0), 0);
@@ -595,7 +608,7 @@ function due(dateStr, status){
   if(dateStr === dkey(tm)) return {label:'Tomorrow', cls:'b'};
   const d = parseDay(dateStr); const start = new Date(); start.setHours(0,0,0,0);
   const diff = Math.round((d - start) / 864e5);
-  return {label: diff < 7 ? d.toLocaleDateString('en-ZA',{weekday:'short'}) : d.toLocaleDateString('en-ZA',{day:'numeric',month:'short'}), cls:'b'};
+  return {label: diff < 7 ? WKD[d.getDay()] : shortDate(d), cls:'b'};
 }
 function ago(ts){
   if(!ts) return '';
@@ -605,6 +618,21 @@ function ago(ts){
   if(days === 1) return 'Yesterday';
   if(days < 7) return `${days}d ago`;
   return fmtDate(ts);
+}
+// When a finished task was completed vs when it was due
+function completion(t){
+  if(!t || t.status !== 'complete' || !t.completed_at) return null;
+  const doneKey = dkey(new Date(t.completed_at));
+  const short = k => shortDate(parseDay(k));
+  const long = k => longDate(parseDay(k));
+  const out = { done:short(doneKey), doneLong:long(doneKey), due:null, dueLong:null, diff:0, tag:'No due date', cls:'n' };
+  if(!t.due_date) return out;
+  const diff = Math.round((parseDay(doneKey) - parseDay(t.due_date)) / 864e5);
+  Object.assign(out, { due:short(t.due_date), dueLong:long(t.due_date), diff });
+  if(diff > 0) Object.assign(out, { tag:`${plural(diff,'day')} late`, cls:'r' });
+  else if(diff < 0) Object.assign(out, { tag:`${plural(-diff,'day')} early`, cls:'g' });
+  else Object.assign(out, { tag:'On time', cls:'g' });
+  return out;
 }
 function sortByDue(list){
   return [...list].sort((a,b) => {
@@ -874,7 +902,8 @@ function taskCard(t, showClient){
     ${top ? `<div class="tcard-top">${top}</div>` : ''}
     <div class="tcard-title">${esc(t.title)}</div>
     ${t.description && t.status !== 'complete' ? `<div class="tcard-desc">${esc(t.description)}</div>` : ''}
-    <div class="tcard-foot">${stack(ps)}<span class="tcard-meta">${cl.length ? `<span class="mini" style="display:inline-flex;align-items:center;gap:3px">${ICON.check}${cl.filter(i=>i.done).length}/${cl.length}</span>` : ''}${duePill(d)}</span></div>
+    ${(() => { const cm = completion(t); return cm ? `<div class="done-meta"><span>Done <b>${cm.done}</b></span>${cm.due ? `<span>Due <b>${cm.due}</b></span>` : ''}</div>` : ''; })()}
+    <div class="tcard-foot">${stack(ps)}<span class="tcard-meta">${t.status !== 'complete' && cl.length ? `<span class="mini" style="display:inline-flex;align-items:center;gap:3px">${ICON.check}${cl.filter(i=>i.done).length}/${cl.length}</span>` : ''}${(() => { const cm = completion(t); return cm ? `<span class="pill ${cm.cls}">${cm.tag}</span>` : duePill(d); })()}</span></div>
   </div>`;
 }
 function pageBoard({ title, sub, tasks, preset = {}, showClient = true, back = null, extra = '' }){
@@ -1142,10 +1171,13 @@ function archiveResultsHTML(){
   if(!list.length) return `<div class="empty">No archived tasks in ${monthLabel(k)} match "${esc(S.archQuery)}".</div>`;
   return archiveGroups(list).map(([cid, tasks]) => `<div class="list" style="margin-bottom:16px">
       <div class="row" style="grid-template-columns:minmax(0,1fr) auto;padding-top:14px;padding-bottom:10px"><span>${clientPill(cid === '_internal' ? null : client(cid))}</span><span class="mini">${plural(tasks.length,'task')}</span></div>
-      ${tasks.map(t => `<button class="row" data-action="open-task" data-id="${t.id}" style="grid-template-columns:minmax(0,1fr) 110px 120px">
+      <div class="row row-head arch-row"><span>Task</span><span>Assigned</span><span>Due</span><span>Done</span><span class="end">Timing</span></div>
+      ${tasks.map(t => { const cm = completion(t) || {}; return `<button class="row arch-row" data-action="open-task" data-id="${t.id}">
         <span class="truncate" style="font-weight:600;font-size:14px">${esc(t.title)}</span>
         <span>${stack(assigneesOf(t.id))}</span>
-        <span class="mini end">Done ${fmtDate(t.completed_at)}</span></button>`).join('')}
+        <span class="mini">${cm.due || '<span class="faint">None</span>'}</span>
+        <span class="mini" style="color:var(--text)">${cm.done || ''}</span>
+        <span class="end">${cm.tag ? `<span class="pill ${cm.cls}">${cm.tag}</span>` : ''}</span></button>`; }).join('')}
     </div>`).join('');
 }
 function pageArchive(){
@@ -1219,7 +1251,8 @@ function taskModal(){
         <div class="field"><label>Client</label><select class="inp" data-f="client_id"><option value="">None, internal project</option>${S.clients.map(c => `<option value="${c.id}" ${c.id===d.client_id?'selected':''}>${esc(c.name)}</option>`).join('')}</select></div>
         <div class="field"><label>Due date</label><input class="inp" type="date" data-f="due_date" value="${esc(d.due_date)}"></div>
         <div class="field"><label>Priority</label>${seg('priority', [['low','Low'],['medium','Medium'],['high','High']], d.priority)}</div>
-        ${t ? `<div class="mini faint">Created ${fmtDate(t.created_at)}${creator ? ` by ${esc(creator.name)}` : ''}${t.completed_at && t.status==='complete' ? `. Completed ${fmtDate(t.completed_at)}` : ''}</div>` : ''}
+        ${(() => { const cm = completion(t); return cm ? `<div class="field"><label>Completed</label><div class="done-box"><div><div class="done-box-date">${cm.doneLong}</div><div class="mini faint">${cm.dueLong ? `Due ${cm.dueLong}` : 'No due date was set'}</div></div><span class="pill ${cm.cls}">${cm.tag}</span></div></div>` : ''; })()}
+        ${t ? `<div class="mini faint">Created ${fmtDate(t.created_at)}${creator ? ` by ${esc(creator.name)}` : ''}</div>` : ''}
       </div>
     </div>
     <div class="sheet-foot">${m.id ? '<button class="btn-danger" data-action="task-delete">Delete task</button>' : ''}<div class="foot-r"><button class="btn btn-soft" data-action="close-modal">Cancel</button><button class="btn" data-action="task-save">${m.id ? 'Save changes' : 'Create task'}</button></div></div>
@@ -1633,11 +1666,13 @@ function mTaskRow(t, showClient = true){
   const subs = [
     showClient ? `<span class="m-cl"><i class="m-cdot" style="background:${esc(c ? c.tag_color : '#8E8E93')}"></i>${esc(c ? c.name : 'Internal')}</span>` : '',
     d && !done ? `<span style="color:${dueColour(d)}">${d.label}</span>` : '',
-    cl.length ? `<span>${cl.filter(i => i.done).length}/${cl.length}</span>` : '',
+    !done && cl.length ? `<span>${cl.filter(i => i.done).length}/${cl.length}</span>` : '',
   ].filter(Boolean).join('');
+  const cm = completion(t);
+  const doneLine = cm ? `<div class="m-row-sub"><span style="color:var(--igreen)">Done ${cm.done}</span>${cm.due ? `<span style="color:${cm.diff > 0 ? 'var(--ired)' : 'var(--m2)'}">Due ${cm.due}${cm.diff > 0 ? `, ${plural(cm.diff,'day')} late` : cm.diff < 0 ? `, ${plural(-cm.diff,'day')} early` : ', on time'}</span>` : ''}</div>` : '';
   return `<div class="m-row m-task tap ${done?'done':''}" role="button" tabindex="0" data-action="open-task" data-id="${t.id}" data-lp="task">
     <button class="m-check ${done?'on':''} ${t.status==='in_progress'?'prog':''} ${high?'hi':''}" data-action="m-check" data-id="${t.id}" aria-label="${done ? 'Mark not done' : 'Mark done'}">${done ? I.tick : ''}</button>
-    <div class="m-row-main"><div class="m-row-title">${high ? '<span class="m-prio">!</span>' : ''}${esc(t.title)}</div>${subs ? `<div class="m-row-sub">${subs}</div>` : ''}</div>
+    <div class="m-row-main"><div class="m-row-title">${high ? '<span class="m-prio">!</span>' : ''}${esc(t.title)}</div>${subs ? `<div class="m-row-sub">${subs}</div>` : ''}${doneLine}</div>
     <div class="m-row-end">${stackSm(assigneesOf(t.id))}</div>
   </div>`;
 }
@@ -1846,6 +1881,7 @@ function mTaskSheet(){
     <div class="m-group m-gap">
       ${mField('Client', `<select class="m-fval" data-f="client_id"><option value="">Internal project</option>${S.clients.map(c => `<option value="${c.id}" ${c.id===d.client_id?'selected':''}>${esc(c.name)}</option>`).join('')}</select>${I.updown}`)}
       ${mField('Due date', `<input class="m-fval" type="date" data-f="due_date" value="${esc(d.due_date)}">`)}
+      ${(() => { const cm = completion(t); return cm ? `<div class="m-row"><span class="m-flabel">Completed</span><span class="m-row-end" style="margin-left:auto"><span style="color:var(--m2)">${cm.doneLong}</span><span class="m-tag ${cm.cls === 'r' ? 'r' : cm.cls === 'g' ? 'g' : ''}">${cm.tag}</span></span></div>` : ''; })()}
       ${mField('Priority', `<select class="m-fval" data-f="priority">${[['low','Low'],['medium','Medium'],['high','High']].map(([v,l]) => `<option value="${v}" ${v===d.priority?'selected':''}>${l}</option>`).join('')}</select>${I.updown}`)}
     </div>
     ${d.due_date ? '<div class="m-gfoot"><button class="m-link" data-action="clear-due">Remove due date</button></div>' : ''}
@@ -1858,7 +1894,7 @@ function mTaskSheet(){
       ${m.comments.map(c => { const a = person(c.author_id); return `<div class="m-row m-comment" style="--inset:58px">${av(a,30)}<div class="m-row-main"><div class="m-cmeta"><b>${esc(a?.name || 'Someone')}</b> ${fmtDateTime(c.created_at)}</div><div class="m-cbody">${esc(c.body)}</div></div></div>`; }).join('')}
       <div class="m-row m-comment-add"><textarea class="m-fval left grow" data-m="comment" rows="1" placeholder="Write a comment">${esc(m.comment || '')}</textarea><button class="m-nbtn b sm" data-action="comment-add">Post</button></div>
     </div>` : ''}
-    ${t ? `<div class="m-gfoot">Created ${fmtDate(t.created_at)}${creator ? ` by ${esc(creator.name)}` : ''}${t.completed_at && t.status === 'complete' ? `. Completed ${fmtDate(t.completed_at)}.` : '.'}</div>` : ''}
+    ${t ? `<div class="m-gfoot">Created ${fmtDate(t.created_at)}${creator ? ` by ${esc(creator.name)}` : ''}.</div>` : ''}
     ${m.id ? '<div class="m-group m-gap"><button class="m-row tap m-destructive" data-action="task-delete">Delete Task</button></div>' : ''}`);
 }
 function mLeadSheet(){
