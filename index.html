@@ -209,6 +209,25 @@ button.row:hover{background:#FAFAFB}
 .legend{display:flex;gap:14px;align-items:center;font-size:12px;color:var(--muted);font-weight:600}
 .legend i{width:8px;height:8px;border-radius:999px;display:inline-block;margin-right:6px}
 
+/* Calendar tools */
+.cal-tools{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+.cal-filters{display:flex;gap:8px;flex-wrap:wrap}
+.cal-filter{display:inline-flex;align-items:center;gap:7px;border:1px solid #E4E4E7;background:#fff;border-radius:999px;padding:7px 14px 7px 11px;font-size:13px;font-weight:600;color:var(--faint)}
+.cal-filter i{width:10px;height:10px;border-radius:999px;display:inline-block;opacity:.3}
+.cal-filter b{font-weight:700;color:var(--faint);margin-left:2px}
+.cal-filter.on{color:var(--text);border-color:#D2D2D7;box-shadow:var(--shadow)}
+.cal-filter.on i{opacity:1}
+.cal-pill.ev{background:#DCEEE0;color:#2F6B3E}
+.cal-pill.mt{background:#FEE7E1;color:#C23A1E}
+.cal-pill.cont{opacity:.7;border-radius:4px 8px 8px 4px}
+.sheet.md{max-width:640px}
+.grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.up-day{margin-bottom:18px}
+.up-head{display:flex;align-items:baseline;gap:10px;margin:0 4px 8px;font-size:15px}
+.up-row{grid-template-columns:4px 120px minmax(0,1fr) auto;gap:14px}
+.up-bar{width:4px;height:34px;border-radius:2px}
+.up-end{display:flex;align-items:center;gap:10px;justify-self:end}
+
 /* Finance */
 .fin-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;align-items:start}
 .fin-col{display:flex;flex-direction:column;gap:18px;min-width:0}
@@ -449,6 +468,15 @@ button.row:hover{background:#FAFAFB}
 .m-lb-track span{display:block;height:100%;border-radius:999px}
 .m-lb-n{font-size:22px;font-weight:700;letter-spacing:.35px;font-variant-numeric:tabular-nums;flex-shrink:0;min-width:28px;text-align:right}
 
+.m-chip-k i{width:9px;height:9px;border-radius:999px;display:inline-block}
+.m-chip-k.on{background:#fff;color:#000;box-shadow:0 1px 3px rgba(0,0,0,.12)}
+.m-chip-k:not(.on){color:rgba(60,60,67,.45)}
+.m-ev .m-ev-time{line-height:1.25}
+.m-switch{position:relative;width:51px;height:31px;border-radius:999px;border:none;background:#E9E9EB;flex-shrink:0;padding:0;transition:background-color .2s}
+.m-switch::after{content:'';position:absolute;top:2px;left:2px;width:27px;height:27px;border-radius:999px;background:#fff;box-shadow:0 3px 8px rgba(0,0,0,.15),0 1px 1px rgba(0,0,0,.16);transition:transform .22s cubic-bezier(.3,.7,.3,1)}
+.m-switch.on{background:#34C759}
+.m-switch.on::after{transform:translateX(20px)}
+
 /* Tab bar */
 .m-tabs{position:fixed;left:0;right:0;bottom:0;z-index:40;display:grid;grid-template-columns:repeat(5,1fr);padding:7px 2px calc(env(safe-area-inset-bottom) + 2px);background:rgba(249,249,249,.86);-webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px);border-top:.5px solid var(--sep)}
 .m-tab{border:none;background:none;display:flex;flex-direction:column;align-items:center;gap:3px;color:#8E8E93;font-size:10px;font-weight:500;letter-spacing:.1px;padding:0 0 6px;min-height:49px;font-family:inherit}
@@ -565,9 +593,11 @@ const S = {
   stack:[], histDepth:0, navAnim:'', calAnim:'', skipAnim:false, scroll:{}, mStatus:{}, mFilter:null,
   taskScope:'my-tasks', leadStage:'to_call', calSel:null, pendingRender:false,
   archive:{}, archLoading:null, archMonth:null, archQuery:'', doneWeekCount:null, scores:[],
+  calView:'month', evRange:null, calArch:{}, calFetching:false,
 };
 
 /* ================= Helpers ================= */
+S.calFilter = (() => { try { return { task:true, meeting:true, event:true, ...JSON.parse(localStorage.getItem('fw-cal-filter') || '{}') }; } catch(e){ return { task:true, meeting:true, event:true }; } })();
 const pad = n => String(n).padStart(2,'0');
 const dkey = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
 const today = () => dkey(new Date());
@@ -589,7 +619,7 @@ const uid = () => Math.random().toString(36).slice(2,10);
 const plural = (n,w) => `${n} ${w}${n===1?'':'s'}`;
 const person = id => S.people.find(p => p.id === id);
 const client = id => S.clients.find(c => c.id === id);
-const findTask = id => S.tasks.find(x => x.id === id) || Object.values(S.archive).flat().find(x => x.id === id);
+const findTask = id => S.tasks.find(x => x.id === id) || Object.values(S.archive).flat().find(x => x.id === id) || Object.values(S.calArch).flat().find(x => x.id === id);
 const assigneeIds = taskId => S.assignees.filter(a => a.task_id === taskId).map(a => a.person_id);
 const assigneesOf = taskId => assigneeIds(taskId).map(person).filter(Boolean);
 const isAdmin = () => !!(S.me && S.me.is_admin);
@@ -690,13 +720,14 @@ async function loadAll(){
     sb.from('tasks').select('*').eq('archived', false).order('created_at',{ascending:false}),
     sb.from('task_assignees').select('task_id, person_id, tasks!inner(archived)').eq('tasks.archived', false),
     sb.from('hit_list_leads').select('*').order('created_at',{ascending:false}),
-    sb.from('calendar_events').select('*').order('event_date'),
+    evQuery(evWindow().from, evWindow().to),
   ]);
   const failed = res.find(r => r.error);
   if(failed) toast(failed.error.message, true);
   [S.people, S.clients, S.tasks, S.assignees, S.leads, S.events] = res.map(r => r.data || []);
+  S.evRange = evWindow();
   S.assignees = S.assignees.map(a => ({ task_id:a.task_id, person_id:a.person_id }));
-  Object.values(S.archive).forEach(list => list.forEach(t => (t._assignees || []).forEach(pid => S.assignees.push({ task_id:t.id, person_id:pid }))));
+  [...Object.values(S.archive), ...Object.values(S.calArch)].forEach(list => list.forEach(t => (t._assignees || []).forEach(pid => S.assignees.push({ task_id:t.id, person_id:pid }))));
   const weekAgoIso = new Date(Date.now() - 7*864e5).toISOString();
   const dw = await sb.from('tasks').select('id', { count:'exact', head:true }).eq('status','complete').gte('completed_at', weekAgoIso);
   S.doneWeekCount = dw.error ? null : dw.count;
@@ -962,46 +993,236 @@ function pageHitList(){
 }
 
 /* ---------- Calendar ---------- */
-function dayItems(k){
-  const ev = S.events.filter(e => e.event_date === k).sort((a,b) => (a.event_time||'99').localeCompare(b.event_time||'99'));
-  const tk = S.tasks.filter(t => t.due_date === k);
-  return { ev, tk };
+const CAL_KINDS = {
+  task:    { label:'Tasks',    dot:'#1C6FE0', bg:'#E4EFFC', fg:'#1C6FE0' },
+  meeting: { label:'Meetings', dot:'#F04A2B', bg:'#FEE7E1', fg:'#C23A1E' },
+  event:   { label:'Events',   dot:'#34A853', bg:'#DCEEE0', fg:'#2F6B3E' },
+};
+const CAL_FILTER_KEY = 'fw-cal-filter';
+function loadCalFilter(){
+  try { return { task:true, meeting:true, event:true, ...JSON.parse(localStorage.getItem(CAL_FILTER_KEY) || '{}') }; }
+  catch(e){ return { task:true, meeting:true, event:true }; }
+}
+function saveCalFilter(){ try { localStorage.setItem(CAL_FILTER_KEY, JSON.stringify(S.calFilter)); } catch(e){} }
+const addDaysKey = (k, n) => { const d = parseDay(k); d.setDate(d.getDate() + n); return dkey(d); };
+
+// Only the months around what you're looking at are loaded, so the calendar stays fast forever.
+function evWindow(){
+  const vm = mkey(S.cal.y, S.cal.m), cur = thisMonth();
+  const keys = [shiftMonth(vm,-1), vm, shiftMonth(vm,1), cur, shiftMonth(cur,1)].sort();
+  return { from:keys[0], to:shiftMonth(keys[keys.length-1], 1) };
+}
+const evQuery = (from, to) => sb.from('calendar_events').select('*').gte('event_date', addDaysKey(from, -31)).lt('event_date', to).order('event_date');
+async function ensureCalData(){
+  if(S.calFetching) return;
+  const w = evWindow(), jobs = [];
+  if(!S.evRange || w.from < S.evRange.from || w.to > S.evRange.to){
+    const from = S.evRange && S.evRange.from < w.from ? S.evRange.from : w.from;
+    const to = S.evRange && S.evRange.to > w.to ? S.evRange.to : w.to;
+    jobs.push(evQuery(from, to).then(r => { if(!r.error){ S.events = r.data || []; S.evRange = { from, to }; } }));
+  }
+  const vm = mkey(S.cal.y, S.cal.m);
+  [shiftMonth(vm,-1), vm, shiftMonth(vm,1)].forEach(mk => {
+    if(S.calArch[mk]) return;
+    S.calArch[mk] = [];
+    jobs.push(sb.from('tasks').select('*').eq('archived', true).gte('due_date', mk).lt('due_date', shiftMonth(mk,1)).then(async r => {
+      const list = r.data || [];
+      if(list.length){
+        const { data:as } = await sb.from('task_assignees').select('task_id, person_id').in('task_id', list.map(t => t.id));
+        list.forEach(t => { t._assignees = (as || []).filter(a => a.task_id === t.id).map(a => a.person_id); });
+        const have = new Set(S.assignees.map(a => a.task_id + a.person_id));
+        (as || []).forEach(a => { if(!have.has(a.task_id + a.person_id)) S.assignees.push(a); });
+      }
+      S.calArch[mk] = list;
+    }));
+  });
+  if(!jobs.length) return;
+  S.calFetching = true;
+  await Promise.all(jobs);
+  S.calFetching = false;
+  if(S.route === 'calendar') renderView();
+}
+
+const evCovers = (e, k) => e.event_date === k || (!!e.end_date && e.event_date <= k && e.end_date >= k);
+const evMultiDay = e => !!e.end_date && e.end_date !== e.event_date;
+function evWhen(e, k){
+  if(e.kind === 'event' && (e.all_day || !e.event_time)){
+    if(evMultiDay(e) && k) return `Day ${Math.round((parseDay(k) - parseDay(e.event_date)) / 864e5) + 1} of ${Math.round((parseDay(e.end_date) - parseDay(e.event_date)) / 864e5) + 1}`;
+    return 'All day';
+  }
+  return `${timeLabel(e.event_time)}${e.end_time ? ' to ' + timeLabel(e.end_time) : ''}`;
+}
+const evPeople = e => (e.attendee_ids || []).map(person).filter(Boolean);
+function calTasksForDay(k){
+  const mk = k.slice(0,7) + '-01';
+  return [...S.tasks.filter(t => t.due_date === k), ...(S.calArch[mk] || []).filter(t => t.due_date === k)];
+}
+function dayItems(k, all){
+  const f = all ? { task:true, meeting:true, event:true } : S.calFilter;
+  const byTime = (a,b) => (a.event_time || '').localeCompare(b.event_time || '');
+  const evs = f.event ? S.events.filter(e => e.kind === 'event' && evCovers(e,k)).sort((a,b) => (b.all_day - a.all_day) || byTime(a,b)) : [];
+  const mts = f.meeting ? S.events.filter(e => e.kind === 'meeting' && e.event_date === k).sort(byTime) : [];
+  const tk = f.task ? calTasksForDay(k) : [];
+  return { evs, mts, tk, count:evs.length + mts.length + tk.length };
+}
+function monthCounts(){
+  const y = S.cal.y, m = S.cal.m, days = new Date(y, m+1, 0).getDate();
+  const ev = new Set(), mt = new Set(); let tk = 0;
+  for(let d = 1; d <= days; d++){
+    const k = `${y}-${pad(m+1)}-${pad(d)}`;
+    S.events.forEach(e => { if(e.kind === 'event' && evCovers(e,k)) ev.add(e.id); if(e.kind === 'meeting' && e.event_date === k) mt.add(e.id); });
+    tk += calTasksForDay(k).length;
+  }
+  return { task:tk, meeting:mt.size, event:ev.size };
+}
+function dayLabel(k){
+  const t = today(), tm = addDaysKey(t, 1);
+  return (k === t ? 'Today, ' : k === tm ? 'Tomorrow, ' : '') + parseDay(k).toLocaleDateString('en-ZA', { weekday:'long' }) + ' ' + shortDate(parseDay(k));
+}
+
+/* desktop */
+function calFilterChips(){
+  const c = S.calView === 'upcoming' ? null : monthCounts();
+  return `<div class="cal-filters" role="group" aria-label="Show on calendar">${Object.entries(CAL_KINDS).map(([k,v]) =>
+    `<button class="cal-filter ${S.calFilter[k] ? 'on' : ''}" data-action="cal-filter" data-k="${k}" aria-pressed="${!!S.calFilter[k]}"><i style="background:${v.dot}"></i>${v.label}${c ? `<b>${c[k]}</b>` : ''}</button>`).join('')}</div>`;
+}
+function calPill(item, type, k){
+  if(type === 'task'){ const dd = due(item.due_date, item.status); return `<span class="cal-pill pill ${dd ? dd.cls : 'b'}" data-action="open-task" data-id="${item.id}">${esc(item.title)}</span>`; }
+  const cont = type === 'event' && evMultiDay(item) && k !== item.event_date;
+  const time = type === 'meeting' || (item.event_time && !item.all_day) ? timeLabel(item.event_time) + ' ' : '';
+  return `<span class="cal-pill ${type === 'meeting' ? 'mt' : 'ev'} ${cont ? 'cont' : ''}" data-action="open-event" data-id="${item.id}" title="${esc(item.title)}">${cont ? '' : time}${esc(item.title)}</span>`;
+}
+function upcomingHTML(){
+  const start = today(), out = [];
+  for(let i = 0; i < 30; i++){
+    const k = addDaysKey(start, i), it = dayItems(k);
+    if(!it.count) continue;
+    const rows = [
+      ...it.evs.map(e => ({ e, type:'event' })), ...it.mts.map(e => ({ e, type:'meeting' })), ...it.tk.map(t => ({ t, type:'task' })),
+    ].map(r => {
+      const kind = CAL_KINDS[r.type];
+      if(r.type === 'task'){ const t = r.t, dd = due(t.due_date, t.status);
+        return `<button class="row up-row" data-action="open-task" data-id="${t.id}"><span class="up-bar" style="background:${kind.dot}"></span><span class="mini">Task due</span><span style="min-width:0"><span class="truncate" style="display:block;font-weight:600;font-size:14px">${esc(t.title)}</span><span class="mini faint">${esc(client(t.client_id)?.name || 'Internal project')}</span></span><span class="up-end">${stack(assigneesOf(t.id))}${duePill(dd)}</span></button>`; }
+      const e = r.e, ppl = evPeople(e);
+      return `<button class="row up-row" data-action="open-event" data-id="${e.id}"><span class="up-bar" style="background:${kind.dot}"></span><span class="mini" style="color:var(--text);font-weight:700">${evWhen(e, k)}</span><span style="min-width:0"><span class="truncate" style="display:block;font-weight:600;font-size:14px">${esc(e.title)}</span><span class="mini faint truncate" style="display:block">${esc([r.type === 'meeting' ? 'Meeting' : 'Event', e.location].filter(Boolean).join(', '))}</span></span><span class="up-end">${ppl.length ? stack(ppl) : ''}</span></button>`;
+    }).join('');
+    out.push(`<div class="up-day"><div class="up-head"><b>${dayLabel(k)}</b><span class="mini faint">${plural(it.count,'item')}</span></div><div class="list">${rows}</div></div>`);
+  }
+  return out.join('') || '<div class="list"><div class="empty">Nothing coming up in the next 30 days for the filters you have on.</div></div>';
 }
 function pageCalendar(){
-  const { y, m } = S.cal;
-  const first = new Date(y, m, 1);
-  const lead = (first.getDay() + 6) % 7;
-  const days = new Date(y, m+1, 0).getDate();
-  const cells = [];
-  for(let i = 0; i < lead; i++) cells.push(null);
-  for(let d = 1; d <= days; d++) cells.push(d);
-  while(cells.length % 7) cells.push(null);
-  const t = today();
-  return `
-  <div class="page-head"><div><h1 class="h1">Calendar</h1><p class="sub">${first.toLocaleDateString('en-ZA',{month:'long',year:'numeric'})}. Click any day to add a meeting or task.</p></div>
-    <div class="head-actions">
-      <div class="legend"><span><i style="background:#1C6FE0"></i>Task due</span><span><i style="background:#F04A2B"></i>Meeting</span></div>
-      <div class="seg nav-seg"><button data-action="cal-prev" aria-label="Previous month">‹</button><button data-action="cal-today">Today</button><button data-action="cal-next" aria-label="Next month">›</button></div>
-      <button class="btn" data-action="new-event">+ New event</button>
-    </div></div>
-  <div class="cal">
-    <div class="cal-head">${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(d => `<div>${d}</div>`).join('')}</div>
-    <div class="cal-grid">
-      ${cells.map(d => {
+  ensureCalData();
+  const { y, m } = S.cal, first = new Date(y, m, 1), t = today();
+  const isMonth = S.calView !== 'upcoming';
+  let body;
+  if(isMonth){
+    const lead = (first.getDay() + 6) % 7, days = new Date(y, m+1, 0).getDate(), cells = [];
+    for(let i = 0; i < lead; i++) cells.push(null);
+    for(let d = 1; d <= days; d++) cells.push(d);
+    while(cells.length % 7) cells.push(null);
+    body = `<div class="cal">
+      <div class="cal-head">${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(d => `<div>${d}</div>`).join('')}</div>
+      <div class="cal-grid">${cells.map(d => {
         if(!d) return '<div class="cal-cell out"></div>';
-        const k = `${y}-${pad(m+1)}-${pad(d)}`;
-        const { ev, tk } = dayItems(k);
-        const items = [
-          ...ev.map(e => `<span class="cal-pill" style="background:#FEE7E1;color:#C23A1E" data-action="open-event" data-id="${e.id}">${e.event_time?timeLabel(e.event_time)+' ':''}${esc(e.title)}</span>`),
-          ...tk.map(x => { const dd = due(x.due_date, x.status); return `<span class="cal-pill pill ${dd?dd.cls:'b'}" data-action="open-task" data-id="${x.id}">${esc(x.title)}</span>`; }),
-        ];
-        return `<div class="cal-cell" data-action="open-day" data-date="${k}" role="button" tabindex="0" aria-label="${parseDay(k).toLocaleDateString('en-ZA',{weekday:'long',day:'numeric',month:'long'})}">
-          <span class="cal-date ${k===t?'today':''}">${d}</span>
-          ${items.slice(0,3).join('')}${items.length > 3 ? `<span class="cal-more">+${items.length-3} more</span>` : ''}
-        </div>`;
-      }).join('')}
+        const k = `${y}-${pad(m+1)}-${pad(d)}`, it = dayItems(k);
+        const pills = [...it.evs.map(e => calPill(e,'event',k)), ...it.mts.map(e => calPill(e,'meeting',k)), ...it.tk.map(x => calPill(x,'task',k))];
+        return `<div class="cal-cell" data-action="open-day" data-date="${k}" role="button" tabindex="0" aria-label="${dayLabel(k)}${it.count ? `, ${plural(it.count,'item')}` : ''}">
+          <span class="cal-date ${k===t?'today':''}">${d}</span>${pills.slice(0,3).join('')}${pills.length > 3 ? `<span class="cal-more">+${pills.length-3} more</span>` : ''}</div>`;
+      }).join('')}</div></div>`;
+  } else body = upcomingHTML();
+  return `
+  <div class="page-head"><div><h1 class="h1">Calendar</h1><p class="sub">${isMonth ? first.toLocaleDateString('en-ZA',{month:'long',year:'numeric'}) + '. Click a day to see it or add to it.' : 'Everything in the next 30 days.'}</p></div>
+    <div class="head-actions"><button class="btn btn-soft" data-action="new-event" data-kind="event">+ Event</button><button class="btn" data-action="new-event" data-kind="meeting">+ Meeting</button></div></div>
+  <div class="cal-tools">${calFilterChips()}
+    <div class="head-actions">
+      <div class="seg" style="min-width:200px">${[['month','Month'],['upcoming','Upcoming']].map(([v,l]) => `<button class="${(S.calView||'month')===v?'on':''}" data-action="cal-view" data-v="${v}">${l}</button>`).join('')}</div>
+      ${isMonth ? `<div class="seg nav-seg"><button data-action="cal-prev" aria-label="Previous month">‹</button><button data-action="cal-today">Today</button><button data-action="cal-next" aria-label="Next month">›</button></div>` : ''}
+    </div></div>
+  ${body}`;
+}
+
+function eventModal(){
+  const m = S.modal, d = m.draft, meeting = d.kind === 'meeting';
+  const timed = meeting || !d.all_day;
+  return shell(`
+    ${head(`<span class="pill ${meeting ? 'o' : 'g'}">${m.id ? (meeting ? 'Meeting' : 'Event') : (meeting ? 'New meeting' : 'New event')}</span>`)}
+    <div class="sheet-main ks" style="padding-top:12px">
+      ${seg('kind', [['meeting','Meeting'],['event','Event']], d.kind)}
+      <input class="title-input" data-f="title" placeholder="${meeting ? 'Meeting with...' : 'Flight to Cape Town, shoot day, leave...'}" value="${esc(d.title)}" autocomplete="off">
+      ${meeting ? `<div class="grid3">
+          <div class="field"><label>Date</label><input class="inp" type="date" data-f="event_date" value="${esc(d.event_date)}"></div>
+          <div class="field"><label>Starts</label><input class="inp" type="time" data-f="event_time" value="${esc(d.event_time)}"></div>
+          <div class="field"><label>Ends</label><input class="inp" type="time" data-f="end_time" value="${esc(d.end_time)}"></div></div>`
+      : `<div class="field"><label>Timing</label>${seg('all_day', [['1','All day'],['0','Set times']], d.all_day ? '1' : '0')}</div>
+         <div class="grid2">
+          <div class="field"><label>Starts</label><input class="inp" type="date" data-f="event_date" value="${esc(d.event_date)}"></div>
+          <div class="field"><label>Ends <span class="hint">optional, for trips</span></label><input class="inp" type="date" data-f="end_date" value="${esc(d.end_date)}" min="${esc(d.event_date)}"></div></div>
+         ${timed ? `<div class="grid2">
+          <div class="field"><label>Start time</label><input class="inp" type="time" data-f="event_time" value="${esc(d.event_time)}"></div>
+          <div class="field"><label>End time</label><input class="inp" type="time" data-f="end_time" value="${esc(d.end_time)}"></div></div>` : ''}`}
+      <div class="field"><label>${meeting ? 'Who\'s in it' : 'Who\'s involved'}</label><div class="chips">${S.people.map(p => `<button class="chip ${d.assignees.includes(p.id)?'on':''}" data-action="toggle-assignee" data-id="${p.id}" aria-pressed="${d.assignees.includes(p.id)}">${av(p)}${esc(p.name)}</button>`).join('')}</div>
+        ${meeting ? '<span class="hint">Everyone ticked gets an email 30 minutes before.</span>' : ''}</div>
+      <div class="field"><label>${meeting ? 'Where or call link' : 'Where'}</label><input class="inp" data-f="location" placeholder="${meeting ? 'Office, address or https://meet.google.com/...' : 'Cape Town, venue, flight number'}" value="${esc(d.location)}"></div>
+      <div class="field"><label>Notes</label><textarea class="inp" data-f="notes" rows="3" placeholder="${meeting ? 'Agenda, what to bring' : 'Details, bookings, shot list'}">${esc(d.notes)}</textarea></div>
     </div>
-  </div>`;
+    <div class="sheet-foot">${m.id ? '<button class="btn-danger" data-action="event-delete">Delete</button>' : ''}<div class="foot-r"><button class="btn btn-soft" data-action="close-modal">Cancel</button><button class="btn" data-action="event-save">${m.id ? 'Save changes' : meeting ? 'Add meeting' : 'Add event'}</button></div></div>
+  `, 'md');
+}
+function dayModal(){
+  const m = S.modal, it = dayItems(m.date, true);
+  const evRow = (e, type) => `<button class="day-item" data-action="open-event" data-id="${e.id}"><span class="pill ${type === 'meeting' ? 'o' : 'g'}" style="min-width:74px;justify-content:center">${evWhen(e, m.date)}</span><span class="truncate" style="flex:1">${esc(e.title)}</span>${evPeople(e).length ? stack(evPeople(e)) : ''}</button>`;
+  return shell(`
+    ${head(`<div style="font-weight:800;font-size:19px;letter-spacing:-.01em">${dayLabel(m.date)}</div>`)}
+    <div class="sheet-main ks" style="padding-top:14px">
+      <div style="display:flex;flex-direction:column;gap:6px">
+        ${it.evs.map(e => evRow(e,'event')).join('')}
+        ${it.mts.map(e => evRow(e,'meeting')).join('')}
+        ${it.tk.map(x => `<button class="day-item" data-action="open-task" data-id="${x.id}">${duePill(due(x.due_date,x.status))}<span class="truncate" style="flex:1">${esc(x.title)}</span>${stack(assigneesOf(x.id))}</button>`).join('')}
+        ${!it.count ? '<div class="mini faint">Nothing on this day yet.</div>' : ''}
+      </div>
+    </div>
+    <div class="sheet-foot"><div class="foot-r" style="margin-left:0">
+      <button class="btn btn-sm" data-action="day-new" data-kind="meeting">+ Meeting</button>
+      <button class="btn btn-soft btn-sm" data-action="day-new" data-kind="event">+ Event</button>
+      <button class="btn btn-soft btn-sm" data-action="day-add-task">+ Task</button></div>
+      <button class="btn btn-soft btn-sm" data-action="close-modal">Done</button></div>
+  `, 'sm');
+}
+function openEvent(id, preset = {}){
+  const e = id ? S.events.find(x => x.id === id) : null;
+  if(id && !e){ toast('That entry no longer exists', true); return; }
+  const kind = e ? e.kind : (preset.kind || 'meeting');
+  const draft = e ? {
+    kind, title:e.title, event_date:e.event_date, end_date:e.end_date || '', event_time:timeLabel(e.event_time), end_time:timeLabel(e.end_time),
+    all_day:!!e.all_day, location:e.location || '', notes:e.notes || '', assignees:[...(e.attendee_ids || [])],
+  } : { kind, title:'', event_date:preset.date || today(), end_date:'', event_time:'', end_time:'', all_day:kind === 'event', location:'', notes:'', assignees:[S.me.id] };
+  S.modal = { type:'event', id, draft, dirty:false };
+  renderModal();
+  if(!id) setTimeout(() => document.querySelector('.title-input, .m-title-inp')?.focus(), 40);
+}
+async function saveEvent(){
+  const m = S.modal, d = m.draft, meeting = d.kind === 'meeting';
+  if(!d.title.trim()) return toast('Give it a name first', true);
+  if(!d.event_date) return toast('Pick a date', true);
+  if(meeting && !d.event_time) return toast('Pick a start time so we can send the reminder', true);
+  const multi = !meeting && d.end_date && d.end_date !== d.event_date;
+  if(multi && d.end_date < d.event_date) return toast('The end date is before the start date', true);
+  const timed = meeting || !d.all_day;
+  if(timed && d.event_time && d.end_time && !multi && d.end_time <= d.event_time) return toast('The end time is before the start time', true);
+  const row = {
+    kind:d.kind, title:d.title.trim(), event_date:d.event_date, end_date:multi ? d.end_date : null,
+    all_day:!meeting && (d.all_day || !d.event_time), event_time:timed && d.event_time ? d.event_time : null, end_time:timed && d.end_time ? d.end_time : null,
+    location:d.location.trim() || null, notes:d.notes.trim() || null, attendee_ids:d.assignees,
+  };
+  if(m.id){ if(!(await db(sb.from('calendar_events').update(row).eq('id', m.id)))) return; }
+  else { row.created_by = S.me.id; if(!(await db(sb.from('calendar_events').insert(row)))) return; }
+  dismissModal(); toast(m.id ? 'Saved' : meeting ? 'Meeting added. Reminder set for 30 minutes before.' : 'Added to calendar'); loadAll();
+}
+async function deleteEvent(){
+  const e = S.events.find(x => x.id === S.modal.id);
+  if(!(await ask(`Delete ${e ? '"' + e.title + '"' : 'this entry'}?`))) return;
+  if(!(await db(sb.from('calendar_events').delete().eq('id', S.modal.id)))) return;
+  dismissModal(); toast('Deleted'); loadAll();
 }
 
 /* ---------- Team ---------- */
@@ -1296,41 +1517,6 @@ function leadModal(){
   `);
 }
 
-function eventModal(){
-  const m = S.modal, d = m.draft;
-  return shell(`
-    ${head(`<span class="pill o">${m.id ? 'Meeting' : 'New meeting or event'}</span>`)}
-    <div class="sheet-main ks" style="padding-top:12px">
-      <input class="title-input" data-f="title" placeholder="What's happening" value="${esc(d.title)}" autocomplete="off">
-      <div class="grid2">
-        <div class="field"><label>Date</label><input class="inp" type="date" data-f="event_date" value="${esc(d.event_date)}"></div>
-        <div class="field"><label>Time</label><input class="inp" type="time" data-f="event_time" value="${esc(d.event_time)}"></div>
-      </div>
-      <div class="field"><label>Notes</label><textarea class="inp" data-f="notes" rows="3" placeholder="Who's joining, link, agenda">${esc(d.notes)}</textarea></div>
-    </div>
-    <div class="sheet-foot">${m.id ? '<button class="btn-danger" data-action="event-delete">Delete</button>' : ''}<div class="foot-r"><button class="btn btn-soft" data-action="close-modal">Cancel</button><button class="btn" data-action="event-save">${m.id ? 'Save changes' : 'Add to calendar'}</button></div></div>
-  `, 'sm');
-}
-
-function dayModal(){
-  const m = S.modal, { ev, tk } = dayItems(m.date);
-  return shell(`
-    ${head(`<div style="font-weight:800;font-size:19px;letter-spacing:-.01em">${parseDay(m.date).toLocaleDateString('en-ZA',{weekday:'long',day:'numeric',month:'long'})}</div>`)}
-    <div class="sheet-main ks" style="padding-top:14px">
-      <div style="display:flex;flex-direction:column;gap:6px">
-        ${ev.map(e => `<button class="day-item" data-action="open-event" data-id="${e.id}"><span class="pill o">${e.event_time ? timeLabel(e.event_time) : 'All day'}</span><span class="truncate">${esc(e.title)}</span></button>`).join('')}
-        ${tk.map(x => `<button class="day-item" data-action="open-task" data-id="${x.id}">${duePill(due(x.due_date,x.status))}<span class="truncate" style="flex:1">${esc(x.title)}</span>${stack(assigneesOf(x.id))}</button>`).join('')}
-        ${!ev.length && !tk.length ? '<div class="mini faint">Nothing on this day yet.</div>' : ''}
-      </div>
-      <div class="field"><label>Add a meeting</label>
-        <input class="inp" data-m="title" data-enter="day-add-event" placeholder="Meeting name" value="${esc(m.title||'')}">
-        <div class="add-row"><input class="inp" type="time" data-m="time" value="${esc(m.time||'')}" style="max-width:150px"><button class="btn btn-sm" data-action="day-add-event">Add meeting</button></div>
-      </div>
-    </div>
-    <div class="sheet-foot"><button class="btn btn-soft btn-sm" data-action="day-add-task">+ Task due this day</button><div class="foot-r"><button class="btn btn-soft btn-sm" data-action="close-modal">Done</button></div></div>
-  `, 'sm');
-}
-
 function amountModal(){
   const m = S.modal;
   return shell(`
@@ -1377,16 +1563,6 @@ async function loadNotes(id){
   const r = await db(sb.from('hit_list_notes').select('*').eq('lead_id', id).order('created_at'));
   if(r && S.modal?.type === 'lead' && S.modal.id === id){ S.modal.notes = r === true ? [] : r; renderModal(); }
 }
-function openEvent(id, preset = {}){
-  const e = id ? S.events.find(x => x.id === id) : null;
-  if(id && !e){ toast('That event no longer exists', true); return; }
-  const draft = e ? { title:e.title, event_date:e.event_date, event_time:timeLabel(e.event_time), notes:e.notes||'' }
-                  : { title:'', event_date:preset.date || today(), event_time:'', notes:'' };
-  S.modal = { type:'event', id, draft, dirty:false };
-  renderModal();
-  if(!id) setTimeout(() => document.querySelector('.title-input')?.focus(), 30);
-}
-
 async function closeModal(){
   if(!S.modal) return;
   if(S.modal.dirty && !(await ask('Discard your unsaved changes?', 'Discard Changes'))){ snapSheet(); return; }
@@ -1467,27 +1643,6 @@ async function addNote(){
   await db(sb.from('hit_list_leads').update({ last_contact_at:new Date().toISOString() }).eq('id', m.id));
   m.note = ''; loadNotes(m.id);
 }
-async function saveEvent(){
-  const m = S.modal, d = m.draft;
-  if(!d.title.trim() || !d.event_date){ toast('Add a name and a date', true); return; }
-  const row = { title:d.title.trim(), event_date:d.event_date, event_time:d.event_time || null, notes:d.notes.trim() || null };
-  if(m.id){ if(!(await db(sb.from('calendar_events').update(row).eq('id', m.id)))) return; }
-  else { row.created_by = S.me.id; if(!(await db(sb.from('calendar_events').insert(row)))) return; }
-  dismissModal(); toast(m.id ? 'Event saved' : 'Added to calendar'); loadAll();
-}
-async function deleteEvent(){
-  if(!(await ask('Delete this event?'))) return;
-  if(!(await db(sb.from('calendar_events').delete().eq('id', S.modal.id)))) return;
-  dismissModal(); toast('Event deleted'); loadAll();
-}
-async function dayAddEvent(){
-  const m = S.modal, title = (m.title || '').trim();
-  if(!title){ toast('Give the meeting a name', true); return; }
-  if(!(await db(sb.from('calendar_events').insert({ title, event_date:m.date, event_time:m.time || null, created_by:S.me.id })))) return;
-  m.title = ''; m.time = ''; toast('Added to calendar');
-  await loadAll(); renderModal();
-}
-
 /* Finance */
 const finMonth = () => S.finMonth || thisMonth();
 const finList = table => table === 'client_retainers' ? S.retainers : table === 'expenses' ? S.expenses : S.revenueItems;
@@ -1782,37 +1937,6 @@ function mHitList(){
     body:chips + (list.length ? `<div class="m-group">${list.map(mLeadRow).join('')}</div><div class="m-gfoot">Long-press a lead to change its stage. Tap the green phone to call.</div>` : mEmpty(`No leads in ${STAGES.find(s => s[0]===st)[1]}`, hints[st])),
   });
 }
-function mCalendar(){
-  const { y, m } = S.cal, t = today();
-  const inMonth = k => k.startsWith(`${y}-${pad(m+1)}-`);
-  const sel = S.calSel && inMonth(S.calSel) ? S.calSel : (inMonth(t) ? t : `${y}-${pad(m+1)}-01`);
-  S.calShown = sel;
-  const first = new Date(y, m, 1), lead = (first.getDay() + 6) % 7, days = new Date(y, m+1, 0).getDate();
-  let cells = '';
-  for(let i = 0; i < lead; i++) cells += '<span class="m-day empty"></span>';
-  for(let d = 1; d <= days; d++){
-    const k = `${y}-${pad(m+1)}-${pad(d)}`, { ev, tk } = dayItems(k);
-    const dots = [...ev.map(() => 'var(--accent)'), ...tk.map(x => dueColour(due(x.due_date, x.status)) === 'var(--m2)' ? 'var(--tint)' : dueColour(due(x.due_date, x.status)))].slice(0,3);
-    const wk = ((lead + d - 1) % 7) >= 5;
-    cells += `<button class="m-day ${k===sel?'sel':''} ${k===t?'today':''} ${wk?'wk':''}" data-action="cal-select" data-date="${k}" aria-label="${parseDay(k).toLocaleDateString('en-ZA',{weekday:'long',day:'numeric',month:'long'})}${ev.length+tk.length ? `, ${ev.length+tk.length} items` : ''}" aria-pressed="${k===sel}"><span class="n">${d}</span><span class="dots">${dots.map(c => `<i style="background:${c}"></i>`).join('')}</span></button>`;
-  }
-  const { ev, tk } = dayItems(sel);
-  const agenda = ev.length || tk.length ? `<div class="m-group">
-      ${ev.map(e => `<button class="m-row tap m-ev" data-action="open-event" data-id="${e.id}" style="--inset:82px"><span class="m-ev-time">${e.event_time ? timeLabel(e.event_time) : 'All day'}</span><span class="m-ev-bar"></span><div class="m-row-main"><div class="m-row-title">${esc(e.title)}</div>${e.notes ? `<div class="m-row-sub"><span class="truncate">${esc(e.notes)}</span></div>` : ''}</div>${I.chev}</button>`).join('')}
-      ${tk.map(x => mTaskRow(x)).join('')}
-    </div>` : mEmpty('Nothing scheduled', 'Tap + to add a meeting or a task due this day.');
-  const label = first.toLocaleDateString('en-ZA',{month:'long',year:'numeric'});
-  return mPage({
-    title:label, large:label, right:`<button class="m-text-btn" data-action="cal-today">Today</button>${plusBtn('m-cal-plus')}`,
-    largeRight:`<div class="m-arrows"><button class="m-icon-btn" data-action="cal-prev" aria-label="Previous month">${I.chevL}</button><button class="m-icon-btn" data-action="cal-next" aria-label="Next month">${I.chevR}</button></div>`,
-    body:`<div class="m-cal" id="m-cal">
-        <div class="m-cal-week">${['M','T','W','T','F','S','S'].map((d,i) => `<span class="${i>=5?'wk':''}">${d}</span>`).join('')}</div>
-        <div class="m-cal-grid ${S.calAnim || ''}">${cells}</div>
-      </div>
-      <div class="m-agenda-head">${parseDay(sel).toLocaleDateString('en-ZA',{weekday:'long',day:'numeric',month:'long'})}</div>
-      ${agenda}`,
-  });
-}
 function mMore(){
   const openFor = id => S.tasks.filter(t => t.client_id === id && t.status !== 'complete').length;
   const icon = (bg, ic) => `<span class="m-sicon" style="background:${bg}">${ic}</span>`;
@@ -1858,6 +1982,72 @@ function mFinance(){
     ${head('Expenses', f.expenses)}<div class="m-group">${f.exps.map(e => row(esc(e.category), `${e.recurring ? 'Monthly' : 'Once'}${e.description ? ', ' + esc(e.description) : ''}`, e.amount, 'expenses', e.id)).join('')}${addRow('Add expense','expense')}</div>
     ${head('Qualified pipeline', sum(pipe, l => lv(l.id)))}<div class="m-group">${pipe.map(l => `<button class="m-row tap" data-action="open-lead" data-id="${l.id}"><span class="m-row-main m-row-title">${esc(l.business_name)}</span><span class="m-row-end">${lv(l.id) ? `<span class="m-amt">${money(lv(l.id))}</span>` : 'No value'}${I.chev}</span></button>`).join('') || '<div class="m-row"><span class="m-row-main" style="color:var(--m2)">No qualified leads yet</span></div>'}</div>
     <div class="m-gfoot">Tap a line to change or stop it. Changes apply from the month you're viewing.</div>` });
+}
+
+function mEvRow(e, type, k){
+  const kind = CAL_KINDS[type], ppl = evPeople(e);
+  const sub = [type === 'meeting' ? 'Meeting' : 'Event', e.location, ppl.map(p => p.name).join(', ')].filter(Boolean).join(', ');
+  return `<button class="m-row tap m-ev" data-action="open-event" data-id="${e.id}" style="--inset:82px"><span class="m-ev-time">${evWhen(e, k).replace(' to ', '<br>')}</span><span class="m-ev-bar" style="background:${kind.dot}"></span><div class="m-row-main"><div class="m-row-title">${esc(e.title)}</div><div class="m-row-sub"><span class="truncate">${esc(sub)}</span></div></div>${I.chev}</button>`;
+}
+function mDayGroup(k, it){
+  return `<div class="m-group">${it.evs.map(e => mEvRow(e,'event',k)).join('')}${it.mts.map(e => mEvRow(e,'meeting',k)).join('')}${it.tk.map(x => mTaskRow(x)).join('')}</div>`;
+}
+function mCalendar(){
+  ensureCalData();
+  const { y, m } = S.cal, t = today(), isMonth = S.calView !== 'upcoming';
+  const inMonth = k => k.startsWith(`${y}-${pad(m+1)}-`);
+  const sel = S.calSel && inMonth(S.calSel) ? S.calSel : (inMonth(t) ? t : `${y}-${pad(m+1)}-01`);
+  S.calShown = isMonth ? sel : t;
+  const first = new Date(y, m, 1), label = first.toLocaleDateString('en-ZA', { month:'long', year:'numeric' });
+  const chips = `<div class="m-chips">${Object.entries(CAL_KINDS).map(([k,v]) => `<button class="m-chip m-chip-k ${S.calFilter[k] ? 'on' : ''}" data-action="cal-filter" data-k="${k}" aria-pressed="${!!S.calFilter[k]}"><i style="background:${S.calFilter[k] ? v.dot : 'rgba(118,118,128,.35)'}"></i>${v.label}</button>`).join('')}</div>`;
+  const viewSeg = `<div class="m-seg-wrap" style="padding-bottom:12px"><div class="m-seg">${[['month','Month'],['upcoming','Upcoming']].map(([v,l]) => `<button class="${(S.calView||'month')===v?'on':''}" data-action="cal-view" data-v="${v}">${l}</button>`).join('')}</div></div>`;
+  let body;
+  if(isMonth){
+    const lead = (first.getDay() + 6) % 7, days = new Date(y, m+1, 0).getDate();
+    let cells = '';
+    for(let i = 0; i < lead; i++) cells += '<span class="m-day empty"></span>';
+    for(let d = 1; d <= days; d++){
+      const k = `${y}-${pad(m+1)}-${pad(d)}`, it = dayItems(k);
+      const dots = [...(it.evs.length ? [CAL_KINDS.event.dot] : []), ...(it.mts.length ? [CAL_KINDS.meeting.dot] : []),
+        ...(it.tk.length ? [it.tk.some(x => { const dd = due(x.due_date, x.status); return dd && dd.cls === 'r'; }) ? 'var(--ired)' : CAL_KINDS.task.dot] : [])];
+      const wk = ((lead + d - 1) % 7) >= 5;
+      cells += `<button class="m-day ${k===sel?'sel':''} ${k===t?'today':''} ${wk?'wk':''}" data-action="cal-select" data-date="${k}" aria-label="${dayLabel(k)}${it.count ? `, ${plural(it.count,'item')}` : ''}" aria-pressed="${k===sel}"><span class="n">${d}</span><span class="dots">${dots.map(c => `<i style="background:${c}"></i>`).join('')}</span></button>`;
+    }
+    const it = dayItems(sel);
+    body = `<div class="m-cal" id="m-cal">
+        <div class="m-cal-week">${['M','T','W','T','F','S','S'].map((d,i) => `<span class="${i>=5?'wk':''}">${d}</span>`).join('')}</div>
+        <div class="m-cal-grid ${S.calAnim || ''}">${cells}</div>
+      </div>
+      <div class="m-agenda-head">${dayLabel(sel)}</div>
+      ${it.count ? mDayGroup(sel, it) : mEmpty('Nothing scheduled', 'Tap + to add a meeting, event or task.')}`;
+  } else {
+    const groups = [];
+    for(let i = 0; i < 30; i++){ const k = addDaysKey(t, i), it = dayItems(k); if(it.count) groups.push(`<div class="m-ghead">${dayLabel(k)}</div>${mDayGroup(k, it)}`); }
+    body = groups.join('') || mEmpty('All clear', 'Nothing in the next 30 days for the filters you have on.');
+  }
+  return mPage({
+    title:isMonth ? label : 'Upcoming', large:isMonth ? label : 'Upcoming', right:`<button class="m-text-btn" data-action="cal-today">Today</button>${plusBtn('m-cal-plus')}`,
+    largeRight:isMonth ? `<div class="m-arrows"><button class="m-icon-btn" data-action="cal-prev" aria-label="Previous month">${I.chevL}</button><button class="m-icon-btn" data-action="cal-next" aria-label="Next month">${I.chevR}</button></div>` : '',
+    body:chips + viewSeg + body,
+  });
+}
+function mEventSheet(){
+  const m = S.modal, d = m.draft, meeting = d.kind === 'meeting', timed = meeting || !d.all_day;
+  return mSheet(m.id ? (meeting ? 'Meeting' : 'Event') : (meeting ? 'New Meeting' : 'New Event'), 'event-save', m.id ? 'Save' : 'Add', `
+    <div class="m-seg-wrap flush" style="padding-top:10px"><div class="m-seg">${[['meeting','Meeting'],['event','Event']].map(([v,l]) => `<button class="${d.kind===v?'on':''}" data-action="seg" data-field="kind" data-v="${v}">${l}</button>`).join('')}</div></div>
+    <div class="m-group m-first"><textarea class="m-title-inp grow" rows="1" data-f="title" placeholder="${meeting ? 'Meeting with...' : 'Flight to Cape Town, shoot day...'}" enterkeyhint="done">${esc(d.title)}</textarea><textarea class="m-notes grow" data-f="notes" placeholder="${meeting ? 'Agenda, what to bring' : 'Details, bookings, shot list'}">${esc(d.notes)}</textarea></div>
+    <div class="m-group m-gap">
+      ${meeting ? '' : `<div class="m-row"><span class="m-flabel">All day</span><button class="m-switch ${d.all_day ? 'on' : ''}" data-action="toggle-allday" role="switch" aria-checked="${!!d.all_day}" aria-label="All day" style="margin-left:auto"></button></div>`}
+      ${mField(meeting ? 'Date' : 'Starts', `<input class="m-fval" type="date" data-f="event_date" value="${esc(d.event_date)}">`)}
+      ${meeting ? '' : mField('Ends', `<input class="m-fval" type="date" data-f="end_date" value="${esc(d.end_date)}" min="${esc(d.event_date)}">`)}
+      ${timed ? mField(meeting ? 'Starts' : 'Start time', `<input class="m-fval" type="time" data-f="event_time" value="${esc(d.event_time)}">`) : ''}
+      ${timed ? mField(meeting ? 'Ends' : 'End time', `<input class="m-fval" type="time" data-f="end_time" value="${esc(d.end_time)}">`) : ''}
+    </div>
+    <div class="m-gfoot">${meeting ? 'Everyone in it gets an email 30 minutes before.' : 'Leave Ends empty for a single day. Use it for trips that span days.'}</div>
+    <div class="m-ghead">${meeting ? 'Who\'s in it' : 'Who\'s involved'}</div>
+    <div class="m-group"><div class="m-chipset">${S.people.map(p => `<button class="chip ${d.assignees.includes(p.id)?'on':''}" data-action="toggle-assignee" data-id="${p.id}" aria-pressed="${d.assignees.includes(p.id)}">${av(p)}${esc(p.name)}</button>`).join('')}</div></div>
+    <div class="m-group m-gap">${mField('Where', `<input class="m-fval" data-f="location" placeholder="${meeting ? 'Office or call link' : 'Cape Town, venue'}" value="${esc(d.location)}" autocapitalize="sentences">`)}</div>
+    ${m.id ? `<div class="m-group m-gap"><button class="m-row tap m-destructive" data-action="event-delete">Delete ${meeting ? 'Meeting' : 'Event'}</button></div>` : ''}`);
 }
 
 /* ---------- iOS sheets ---------- */
@@ -1923,17 +2113,6 @@ function mLeadSheet(){
     </div>` : ''}
     ${linked ? `<div class="m-group m-gap"><button class="m-row tap" data-action="go-client" data-id="${l.client_id}"><i class="m-cdot lg" style="background:${esc(linked.tag_color)}"></i><span class="m-row-main m-row-title">Open ${esc(linked.name)}</span>${I.chev}</button></div>` : ''}
     ${m.id ? '<div class="m-group m-gap"><button class="m-row tap m-destructive" data-action="lead-delete">Delete Lead</button></div>' : ''}`);
-}
-function mEventSheet(){
-  const m = S.modal, d = m.draft;
-  return mSheet(m.id ? 'Event' : 'New Event', 'event-save', m.id ? 'Save' : 'Add', `
-    <div class="m-group m-first"><textarea class="m-title-inp grow" rows="1" data-f="title" placeholder="Meeting or event" enterkeyhint="done">${esc(d.title)}</textarea><textarea class="m-notes grow" data-f="notes" placeholder="Who's joining, link, agenda">${esc(d.notes)}</textarea></div>
-    <div class="m-group m-gap">
-      ${mField('Date', `<input class="m-fval" type="date" data-f="event_date" value="${esc(d.event_date)}">`)}
-      ${mField('Time', `<input class="m-fval" type="time" data-f="event_time" value="${esc(d.event_time)}">`)}
-    </div>
-    <div class="m-gfoot">Leave the time empty for an all-day event.</div>
-    ${m.id ? '<div class="m-group m-gap"><button class="m-row tap m-destructive" data-action="event-delete">Delete Event</button></div>' : ''}`);
 }
 function mAmountSheet(){
   const m = S.modal;
@@ -2130,9 +2309,9 @@ document.addEventListener('click', async e => {
     case 'cal-select': S.calSel = d.date; renderView(); break;
     case 'm-cal-plus': {
       const day = S.calShown || today();
-      const label = parseDay(day).toLocaleDateString('en-ZA',{ weekday:'long', day:'numeric', month:'long' });
-      const v = await actionSheet({ title:label, actions:[{ label:'New Meeting or Event', value:'event' }, { label:'New Task Due This Day', value:'task' }] });
-      if(v === 'event') openEvent(null, { date:day }); else if(v === 'task') openTask(null, { due:day });
+      const label = dayLabel(day);
+      const v = await actionSheet({ title:label, actions:[{ label:'New Meeting', value:'meeting' }, { label:'New Event', value:'event' }, { label:'New Task Due This Day', value:'task' }] });
+      if(v === 'meeting' || v === 'event') openEvent(null, { date:day, kind:v }); else if(v === 'task') openTask(null, { due:day });
       break;
     }
     case 'clear-due': m.draft.due_date = ''; m.dirty = true; renderModal(); break;
@@ -2145,12 +2324,22 @@ document.addEventListener('click', async e => {
     case 'open-task': openTask(d.id); break;
     case 'new-lead': openLead(null, { stage:d.stage || 'to_call' }); break;
     case 'open-lead': openLead(d.id); break;
-    case 'new-event': openEvent(null); break;
+    case 'new-event': openEvent(null, { kind:d.kind || 'meeting', date:isMobile() ? (S.calShown || today()) : today() }); break;
     case 'open-event': openEvent(d.id); break;
     case 'open-day': S.modal = { type:'day', date:d.date, title:'', time:'' }; renderModal(); setTimeout(() => document.querySelector('[data-m="title"]')?.focus(), 30); break;
     case 'close-modal': closeModal(); break;
 
-    case 'seg': m.draft[d.field] = d.v; m.dirty = true; renderModal(); break;
+    case 'seg': {
+      let v = d.v;
+      if(d.field === 'all_day') v = d.v === '1';
+      m.draft[d.field] = v;
+      if(d.field === 'kind' && m.type === 'event'){ if(v === 'meeting') m.draft.all_day = false; else if(!m.draft.event_time) m.draft.all_day = true; }
+      m.dirty = true; renderModal(); break;
+    }
+    case 'toggle-allday': m.draft.all_day = !m.draft.all_day; m.dirty = true; renderModal(); break;
+    case 'cal-filter': S.calFilter[d.k] = !S.calFilter[d.k]; saveCalFilter(); renderView(); break;
+    case 'cal-view': S.calView = d.v; renderView(); window.scrollTo(0,0); break;
+    case 'day-new': { const date = m.date, kind = d.kind; S.modal = null; openEvent(null, { date, kind }); break; }
     case 'toggle-assignee': {
       const i = m.draft.assignees.indexOf(d.id);
       if(i >= 0) m.draft.assignees.splice(i,1); else m.draft.assignees.push(d.id);
@@ -2174,7 +2363,6 @@ document.addEventListener('click', async e => {
 
     case 'event-save': saveEvent(); break;
     case 'event-delete': deleteEvent(); break;
-    case 'day-add-event': dayAddEvent(); break;
     case 'day-add-task': { const date = m.date; S.modal = null; openTask(null, { due:date }); break; }
 
     case 'cal-prev': S.cal.m--; if(S.cal.m < 0){ S.cal.m = 11; S.cal.y--; } S.calSel = null; S.calAnim = 'cal-prev'; renderView(); break;
